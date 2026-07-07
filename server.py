@@ -70,6 +70,7 @@ from py.cli_tool import (
     edit_file_string_tool_local, glob_files_tool_local, todo_write_tool_local,
     local_net_tool, send_process_input_tool, read_skill_tool_local,
     get_tools_for_mode, get_local_tools_for_mode,
+    shell_tool_wsl, get_wsl_tools_for_mode,
 )
 from py.task_tools import (
     create_subtask_tool, query_tasks_tool, cancel_subtask_tool, finish_task_tool, finish_main_task_tool,
@@ -1288,6 +1289,9 @@ async def dispatch_tool(tool_name: str, tool_params: dict, settings: dict,is_sub
         "local_net_tool": local_net_tool,                       # 本地网络工具
         "send_process_input_tool":send_process_input_tool,       # 本地进程输入工具
         "read_skill_tool_local": read_skill_tool_local,         # 本地技能读取
+        
+        # WSL 沙盒工具（Windows 专属，复用 Local 文件工具，bash 走 wsl.exe）
+        "shell_tool_wsl": shell_tool_wsl,                       # WSL bash 执行
 
         # 任务中心工具（新增）
         "create_subtask": create_subtask,
@@ -1352,6 +1356,8 @@ async def dispatch_tool(tool_name: str, tool_params: dict, settings: dict,is_sub
             env_settings = settings.get("localEnvSettings", {})
         elif engine == "ds":
             env_settings = settings.get("dsSettings", {})
+        elif engine == "wsl":
+            env_settings = settings.get("wslSettings", {})
         else:
             env_settings = settings.get("acpSettings", {})
         
@@ -1535,7 +1541,7 @@ async def dispatch_tool(tool_name: str, tool_params: dict, settings: dict,is_sub
         
     tool_call = _TOOL_HOOKS[tool_name]
     try:
-        if tool_name in ("acpx_agent", "shell_tool_local", "docker_sandbox"):
+        if tool_name in ("acpx_agent", "shell_tool_local", "docker_sandbox", "shell_tool_wsl"):
             return tool_call(**tool_params)
 
         ret_out = await tool_call(**tool_params)
@@ -2231,6 +2237,8 @@ async def tools_change_messages(request: ChatRequest, settings: dict):
         env_settings = settings.get("localEnvSettings", {})
     elif engine == "ds":
         env_settings = settings.get("dsSettings", {})
+    elif engine == "wsl":
+        env_settings = settings.get("wslSettings", {})
     else:
         env_settings = settings.get("acpSettings", {})
     
@@ -2819,9 +2827,23 @@ Assistant: 表格如下：
         system_context_local = get_system_context()
         if system_context_local:
             content_append(request.messages, 'system', system_context_local)
+    
+    # 1b. WSL 环境信息（Windows 上的 Linux 沙盒）
+    if cwd and Path(cwd).exists() and cli_settings.get("enabled", False) and engine == "wsl":
+        system_context_wsl = (
+            "【环境信息】操作系统：Linux (WSL2) | Shell：bash\n\n"
+            "重要提示：\n"
+            "1. 当前为 WSL2 沙盒环境，请使用 Linux 命令和工具链\n"
+            "2. 文件系统路径格式为 Linux 标准路径（如 /mnt/d/project）\n"
+            "3. 命令通过 bash 执行，请使用 Linux 语法规范\n"
+            "4. 工作目录已自动映射到 WSL 路径\n"
+            "5. apt、pip、npm 等包管理器可直接使用\n"
+            "6. 端口监听在 WSL 内，可通过 localhost 从 Windows 访问"
+        )
+        content_append(request.messages, 'system', system_context_wsl)
 
     # 2. 待办事项
-    if cwd and Path(cwd).exists() and cli_settings.get("enabled", False) and engine in ["ds", "local"]:
+    if cwd and Path(cwd).exists() and cli_settings.get("enabled", False) and engine in ["ds", "local", "wsl"]:
         try:
             todos = await read_todos_local(cwd)
             if isinstance(todos, list) and len(todos) > 0:
@@ -2852,7 +2874,7 @@ Assistant: 表格如下：
 
     # 3. 子任务进度（cowork 模式）
     if permissionMode == "cowork" and not request.is_sub_agent:
-        if cwd and Path(cwd).exists() and cli_settings.get("enabled", False) and engine in ["ds", "local"]:
+        if cwd and Path(cwd).exists() and cli_settings.get("enabled", False) and engine in ["ds", "local", "wsl"]:
             sub_task_context = await query_task_progress(cwd)
             if sub_task_context:
                 content_append(request.messages, 'system', sub_task_context)
@@ -3633,6 +3655,8 @@ async def generate_stream_response(client, reasoner_client, request: ChatRequest
                 tools.extend(get_tools_for_mode('yolo'))
             elif settings['CLISettings']['engine'] == 'local':
                 tools.extend(get_local_tools_for_mode('yolo'))
+            elif settings['CLISettings']['engine'] == 'wsl':
+                tools.extend(get_wsl_tools_for_mode('yolo'))
             elif settings['CLISettings']['engine'] == 'acp':
                 tools.append(acp_agent_tool)
         if  settings['CLISettings']['mode_change']:
@@ -4166,6 +4190,8 @@ async def generate_stream_response(client, reasoner_client, request: ChatRequest
                     env_settings = settings.get("localEnvSettings", {})
                 elif engine == "ds":
                     env_settings = settings.get("dsSettings", {})
+                elif engine == "wsl":
+                    env_settings = settings.get("wslSettings", {})
                 else:
                     env_settings = settings.get("acpSettings", {})
                 
@@ -7045,6 +7071,8 @@ async def chat_endpoint(request: ChatRequest, fastapi_request: Request):
                     env_settings = request_settings.get("localEnvSettings", {})
                 elif engine == "ds":
                     env_settings = request_settings.get("dsSettings", {})
+                elif engine == "wsl":
+                    env_settings = request_settings.get("wslSettings", {})
                 else:
                     env_settings = request_settings.get("acpSettings", {})
                 permission_mode = env_settings.get("permissionMode", "default")

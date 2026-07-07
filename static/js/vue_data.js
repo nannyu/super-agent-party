@@ -428,6 +428,10 @@ let vue_data = {
       enabled: false,
       permissionMode: 'default',
     },
+    wslSettings: {
+      enabled: false,
+      permissionMode: 'default',
+    },
     ocSettings: {
       enabled: false,
       selectedProvider: null,
@@ -511,6 +515,7 @@ let vue_data = {
       showDisclaimer: true,
       goal_iterations: 30,
       enableShortcuts: true,
+      enableNotifications: false,
     },
     saveBgDialogVisible: false,
     newBgName: '',

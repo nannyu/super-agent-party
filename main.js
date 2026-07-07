@@ -1487,6 +1487,11 @@ ipcMain.handle('upload-to-workspace', async (event, { targetDirPath, sourceFileP
       const win = BrowserWindow.fromWebContents(e.sender);
       win.setAlwaysOnTop(flag, 'screen-saver');
     });
+
+    ipcMain.handle('show-notification', (e, title, body) => {
+      const { Notification } = require('electron');
+      new Notification({ title, body }).show();
+    });
     // 窗口状态同步
     mainWindow.on('maximize', () => {
       mainWindow.webContents.send('window-state', 'maximized')

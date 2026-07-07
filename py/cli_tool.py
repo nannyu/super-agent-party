@@ -34,6 +34,62 @@ try:
 except ImportError:
     HAS_ZEROBOX = False
 
+# ==================== WSL 环境检测与工具 ====================
+
+def _check_wsl_available() -> bool:
+    """检测 WSL 是否可用（仅 Windows 上有效）"""
+    if platform.system() != "Windows":
+        return False
+    try:
+        result = subprocess.run(
+            ["wsl.exe", "--status"],
+            capture_output=True, text=True, timeout=15,
+            stdin=subprocess.DEVNULL
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+def _windows_to_wsl_path(win_path: str) -> str:
+    """将 Windows 路径转换为 WSL 路径 (如 D:\\foo\\bar -> /mnt/d/foo/bar)"""
+    path = Path(win_path).resolve()
+    drive = path.drive[0].lower()
+    rest = str(path).replace('\\', '/')[2:]  # 去掉 "D:"
+    return f"/mnt/{drive}{rest}"
+
+async def _ensure_bubblewrap_in_wsl() -> tuple:
+    """检测 WSL 中是否已安装 bubblewrap，如未安装则自动安装。返回 (success: bool, message: str)"""
+    check_cmd = ["wsl.exe", "-e", "bash", "-c", "command -v bwrap || echo NOT_FOUND"]
+    proc = await asyncio.create_subprocess_exec(
+        *check_cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, _ = await proc.communicate()
+    
+    if b"NOT_FOUND" not in stdout:
+        return True, "bubblewrap already installed in WSL."
+    
+    # 自动安装 bubblewrap
+    install_cmd = [
+        "wsl.exe", "-e", "bash", "-c",
+        "sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap"
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *install_cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    await proc.communicate()
+    
+    if proc.returncode == 0:
+        return True, "bubblewrap installed successfully in WSL."
+    else:
+        return False, (
+            "Failed to auto-install bubblewrap. "
+            "Please manually run in WSL: sudo apt update && sudo apt install bubblewrap"
+        )
+
 def get_shell_environment():
     """通过子进程获取完整的 shell 环境"""
     shell = os.environ.get('SHELL', '/bin/zsh')
@@ -107,25 +163,37 @@ async def read_stream(stream, *, is_error: bool = False):
 async def read_stream_chunks(stream, prefix=""):
     """
     分块读取流，不等待换行符，解决进度条显示问题。
+    智能编码检测：优先 UTF-8，若 NUL 字符过多则尝试 UTF-16LE（WSL 部分消息使用）。
     """
     if stream is None:
         return
     
     try:
         while True:
-            # 读取 4KB 数据块
             chunk = await stream.read(4096)
             if not chunk:
                 break
             
-            # 尝试多种编码解码
             decoded = ""
-            for enc in ['utf-8', 'gbk', 'cp437']:
-                try:
-                    decoded = chunk.decode(enc)
-                    break
-                except UnicodeDecodeError:
-                    continue
+            # 优先尝试 UTF-8
+            try:
+                decoded = chunk.decode('utf-8')
+            except UnicodeDecodeError:
+                pass
+            
+            # 若 UTF-8 解码结果中 NUL 字符或替换字符过多，说明可能是 UTF-16LE 数据
+            if decoded:
+                bad_chars = decoded.count('\x00') + decoded.count('\ufffd')
+                if bad_chars > len(decoded) * 0.3:
+                    decoded = ""
+            
+            if not decoded:
+                for enc in ['utf-16-le', 'gbk', 'cp437']:
+                    try:
+                        decoded = chunk.decode(enc)
+                        break
+                    except (UnicodeDecodeError, UnicodeError):
+                        continue
             
             if not decoded:
                 decoded = chunk.decode('utf-8', errors='replace')
@@ -1611,6 +1679,104 @@ async def shell_tool_local(command: str, background: bool = False, timeout: int 
     except Exception as e:
         yield f"[系统错误] 无法启动进程: {str(e)}"
 
+async def shell_tool_wsl(command: str, background: bool = False, timeout: int = 600) -> AsyncIterator[str]:
+    """
+    [WSL] 通过 WSL2 沙盒执行命令。
+    使用 wsl.exe 调用 WSL 内的 bash，结合 bubblewrap 提供额外的进程级沙盒隔离。
+    """
+    effective_timeout = max(1, min(timeout, 3600))
+    
+    settings = await load_settings()
+    cwd = settings.get("CLISettings", {}).get("cc_path")
+    perm = settings.get("wslSettings", {}).get("permissionMode", "default")
+    
+    if not cwd:
+        yield "Error: No workspace directory specified (cc_path)."
+        return
+    
+    allowed, validate_result = validate_bash_command(command, cwd, mode=perm)
+    if not allowed:
+        yield f"[Security] Command blocked: {validate_result}"
+        return
+    
+    if platform.system() != "Windows":
+        yield "[Error] WSL engine is only available on Windows."
+        return
+    
+    if not _check_wsl_available():
+        yield "[Error] WSL is not available. Please ensure WSL2 is installed and running."
+        return
+    
+    bwrap_ok, bwrap_msg = await _ensure_bubblewrap_in_wsl()
+    if not bwrap_ok:
+        yield f"[Warning] {bwrap_msg}\n"
+        yield "[Warning] Proceeding without extra sandboxing.\n\n"
+    else:
+        yield f"[WSL Sandbox] {bwrap_msg}\n\n"
+    
+    wsl_cwd = _windows_to_wsl_path(cwd)
+    
+    wrapped_command = f"cd {wsl_cwd} && {command}"
+    
+    exec_cmd = [
+        "wsl.exe", "-e", "bash", "-c", wrapped_command
+    ]
+    
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    env["TERM"] = "xterm"
+    
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *exec_cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            env=env,
+        )
+        
+        if background:
+            pid = await process_manager.register_process(process, f"[WSL] {command}", "wsl")
+            yield f"[SUCCESS] WSL Background Process PID: {pid}"
+            return
+        
+        queue = asyncio.Queue()
+        async def wrap_stdout():
+            async for chunk in read_stream_chunks(process.stdout, ""):
+                await queue.put(chunk)
+        async def wrap_stderr():
+            async for chunk in read_stream_chunks(process.stderr, "[WSL stderr] "):
+                await queue.put(chunk)
+        
+        stdout_task = asyncio.create_task(wrap_stdout())
+        stderr_task = asyncio.create_task(wrap_stderr())
+        
+        start_time = time.time()
+        try:
+            while not (stdout_task.done() and stderr_task.done() and queue.empty()):
+                remaining = effective_timeout - (time.time() - start_time)
+                if remaining <= 0:
+                    raise asyncio.TimeoutError()
+                try:
+                    content = await asyncio.wait_for(queue.get(), timeout=0.1)
+                    yield content
+                except asyncio.TimeoutError:
+                    continue
+            
+            await process.wait()
+            if process.returncode != 0:
+                yield f"\n--- 运行结束 (Exit Code: {process.returncode}) ---"
+                yield get_detailed_exit_info(process.returncode, command)
+                
+        except asyncio.TimeoutError:
+            subprocess.run(f"taskkill /F /T /PID {process.pid}", shell=True, capture_output=True)
+            yield f"\n\n[TIMEOUT ERROR] WSL 命令执行超过 {effective_timeout} 秒已强制终止。"
+            yield "\n提示：对于长期运行的任务，请使用 'background': true。"
+            
+    except Exception as e:
+        yield f"[WSL 系统错误] 无法启动进程: {str(e)}"
+
 # 恢复原有的 Local 文件工具
 async def list_files_tool_local(path: str = ".", show_all: bool = True) -> str:
     """[Local] 列出文件：优先显示目录，支持数量截断，过滤隐藏文件"""
@@ -2878,5 +3044,80 @@ def get_local_tools_for_mode(mode: str) -> list:
     
     if mode == "default": return read
     if mode == "auto-approve": return read + edit + [LOCAL_TOOLS_REGISTRY["list_processes"], LOCAL_TOOLS_REGISTRY["get_process_logs"], LOCAL_TOOLS_REGISTRY["kill_process"], LOCAL_TOOLS_REGISTRY["local_net_tool"],LOCAL_TOOLS_REGISTRY["send_process_input_local"]]
+    if mode == "yolo": return read + edit + infra
+    return read
+
+WSL_TOOLS_REGISTRY = {
+    # --- 只读 (复用 Local 文件工具) ---
+    "list_files_wsl": LOCAL_TOOLS_REGISTRY["list_files_local"],
+    "read_file_wsl": LOCAL_TOOLS_REGISTRY["read_file_local"],
+    "read_file_range_wsl": LOCAL_TOOLS_REGISTRY["read_file_range_local"],
+    "tail_file_wsl": LOCAL_TOOLS_REGISTRY["tail_file_local"],
+    "search_files_wsl": LOCAL_TOOLS_REGISTRY["search_files_local"],
+    "glob_files_wsl": LOCAL_TOOLS_REGISTRY["glob_files_local"],
+    "read_skill_wsl": LOCAL_TOOLS_REGISTRY["read_skill_local"],
+    # --- 编辑 (复用 Local 文件工具) ---
+    "edit_file_wsl": LOCAL_TOOLS_REGISTRY["edit_file_local"],
+    "edit_file_string_wsl": LOCAL_TOOLS_REGISTRY["edit_file_string_local"],
+    "todo_write_wsl": LOCAL_TOOLS_REGISTRY["todo_write_local"],
+    # --- 基础设施 (WSL 专属 bash + 通用进程管理) ---
+    "bash_wsl": {
+        "type": "function", "function": {
+            "name": "shell_tool_wsl",
+            "description": f"[WSL] {COMMON_BASH_DESC}",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "background": {"type": "boolean", "description": "Run in background."},
+                    "timeout": {
+                        "type": "integer",
+                        "default": 60,
+                        "description": "Max execution time in seconds (1-3600). Default 60."
+                    }
+                },
+                "required": ["command"]
+            }
+        }
+    },
+    "list_processes": LOCAL_TOOLS_REGISTRY["list_processes"],
+    "get_process_logs": LOCAL_TOOLS_REGISTRY["get_process_logs"],
+    "kill_process": LOCAL_TOOLS_REGISTRY["kill_process"],
+    "local_net_tool": LOCAL_TOOLS_REGISTRY["local_net_tool"],
+    "send_process_input_wsl": LOCAL_TOOLS_REGISTRY["send_process_input_local"],
+}
+
+def get_wsl_tools_for_mode(mode: str) -> list:
+    """获取 WSL 环境工具集（复用 Local 文件工具 + WSL bash）"""
+    read = [
+        WSL_TOOLS_REGISTRY["list_files_wsl"],
+        WSL_TOOLS_REGISTRY["read_file_wsl"],
+        WSL_TOOLS_REGISTRY["read_file_range_wsl"],
+        WSL_TOOLS_REGISTRY["tail_file_wsl"],
+        WSL_TOOLS_REGISTRY["search_files_wsl"],
+        WSL_TOOLS_REGISTRY["glob_files_wsl"],
+        WSL_TOOLS_REGISTRY["read_skill_wsl"],
+    ]
+    edit = [
+        WSL_TOOLS_REGISTRY["edit_file_wsl"],
+        WSL_TOOLS_REGISTRY["edit_file_string_wsl"],
+        WSL_TOOLS_REGISTRY["todo_write_wsl"],
+    ]
+    infra = [
+        WSL_TOOLS_REGISTRY["bash_wsl"],
+        WSL_TOOLS_REGISTRY["list_processes"],
+        WSL_TOOLS_REGISTRY["get_process_logs"],
+        WSL_TOOLS_REGISTRY["kill_process"],
+        WSL_TOOLS_REGISTRY["local_net_tool"],
+    ]
+    
+    if mode == "default": return read
+    if mode == "auto-approve": return read + edit + [
+        WSL_TOOLS_REGISTRY["list_processes"],
+        WSL_TOOLS_REGISTRY["get_process_logs"],
+        WSL_TOOLS_REGISTRY["kill_process"],
+        WSL_TOOLS_REGISTRY["local_net_tool"],
+        WSL_TOOLS_REGISTRY["send_process_input_wsl"],
+    ]
     if mode == "yolo": return read + edit + infra
     return read

@@ -2012,6 +2012,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                                       {{ 
                                         CLISettings.engine === 'local' ? localEnvSettings.permissionMode :
                                         CLISettings.engine === 'ds' ? dsSettings.permissionMode :
+                                        CLISettings.engine === 'wsl' ? wslSettings.permissionMode :
                                         CLISettings.engine === 'acp' ? acpSettings.permissionMode : 'unknown'
                                       }}
                                     </span>
@@ -2047,6 +2048,15 @@ function updateElement(el, rawMarkdown, formatFn) {
                                     <el-dropdown-item @click="acpSettings.permissionMode='yolo'; autoSaveSettings()">{{ t('danger')+t('bypassPermissions') }}</el-dropdown-item>
                                     <el-dropdown-item @click="acpSettings.permissionMode='cowork'; autoSaveSettings()">{{ t('danger')+t('coworkPermissionMode') }}</el-dropdown-item>
                                     <el-dropdown-item @click="acpSettings.permissionMode='goal'; autoSaveSettings()">{{ t('danger')+t('goalPermissionMode') }}</el-dropdown-item>
+                                  </template>
+                                  <!-- WSL 沙盒选项 -->
+                                  <template v-else-if="CLISettings.engine === 'wsl'">
+                                    <el-dropdown-item @click="wslSettings.permissionMode='plan'; autoSaveSettings()">{{ t('planMode') }}</el-dropdown-item>
+                                    <el-dropdown-item @click="wslSettings.permissionMode='default'; autoSaveSettings()">{{ t('defaultPermissionMode') }}</el-dropdown-item>
+                                    <el-dropdown-item @click="wslSettings.permissionMode='auto-approve'; autoSaveSettings()">{{ t('acceptEdits') }}</el-dropdown-item>
+                                    <el-dropdown-item @click="wslSettings.permissionMode='yolo'; autoSaveSettings()">{{ t('danger')+t('bypassPermissions') }}</el-dropdown-item>
+                                    <el-dropdown-item @click="wslSettings.permissionMode='cowork'; autoSaveSettings()">{{ t('danger')+t('coworkPermissionMode') }}</el-dropdown-item>
+                                    <el-dropdown-item @click="wslSettings.permissionMode='goal'; autoSaveSettings()">{{ t('danger')+t('goalPermissionMode') }}</el-dropdown-item>
                                   </template>
                                 </el-dropdown-menu>
                               </template>

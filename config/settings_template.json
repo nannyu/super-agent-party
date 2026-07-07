@@ -28,7 +28,8 @@
       "disclaimerAccepted": false,
       "showDisclaimer": true,
       "goal_iterations": 30,
-      "enableShortcuts": true
+      "enableShortcuts": true,
+      "enableNotifications": false
     },
     "mainAgent":"super-model",
     "mcpServers": {},
@@ -226,6 +227,10 @@
       "permissionMode": "default"
     },
     "localEnvSettings": {
+      "enabled": false,
+      "permissionMode": "default"
+    },
+    "wslSettings": {
       "enabled": false,
       "permissionMode": "default"
     },

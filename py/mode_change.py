@@ -1,6 +1,7 @@
 # py/mode_change.py
 
 import logging
+import platform
 from py.get_setting import load_settings, save_settings
 from py.ws_manager import ws_manager
 
@@ -12,10 +13,12 @@ async def update_workspace_settings(
     local_permission_mode: str = None,
     ds_permission_mode: str = None,
     acp_permission_mode: str = None,
+    wsl_permission_mode: str = None,
 ):
     """
     动态调整工作区工具的开启状态、执行引擎以及权限模式。
-    支持本地环境(local)、Docker沙箱(ds)和ACP协议(acp)三种引擎。
+    支持本地环境(local)、Docker沙箱(ds)、ACP协议(acp)和WSL沙箱(wsl)四种引擎。
+    WSL 引擎仅在 Windows 上可用。
     """
     try:
         settings = await load_settings()
@@ -26,7 +29,12 @@ async def update_workspace_settings(
             settings["CLISettings"]["enabled"] = cli_enabled
             changed = True
         
-        if engine in ["local", "ds", "acp"]:
+        wsl_allowed = platform.system() == "Windows"
+        valid_engines = ["local", "ds", "acp"]
+        if wsl_allowed:
+            valid_engines.append("wsl")
+        
+        if engine in valid_engines:
             settings["CLISettings"]["engine"] = engine
             changed = True
 
@@ -51,6 +59,13 @@ async def update_workspace_settings(
             settings["acpSettings"]["permissionMode"] = acp_permission_mode
             changed = True
 
+        # 5. ★ WSL 沙盒权限（仅 Windows）
+        if wsl_permission_mode in ["plan", "default", "auto-approve", "yolo", "cowork", "goal"]:
+            if "wslSettings" not in settings:
+                settings["wslSettings"] = {}
+            settings["wslSettings"]["permissionMode"] = wsl_permission_mode
+            changed = True
+
         if changed:
             await save_settings(settings)
             await ws_manager.broadcast_settings_update(settings)
@@ -62,7 +77,7 @@ async def update_workspace_settings(
                 parts.append(f"CLI tools: {'enabled' if cli_enabled else 'disabled'}.")
             
             if engine:
-                engine_names = {"local": "Local", "ds": "Docker Sandbox", "acp": "ACP Protocol"}
+                engine_names = {"local": "Local", "ds": "Docker Sandbox", "acp": "ACP Protocol", "wsl": "WSL Sandbox"}
                 parts.append(f"Engine: {engine_names.get(engine, engine)}.")
             
             if local_permission_mode and local_permission_mode in ["yolo", "cowork"]:
@@ -87,18 +102,18 @@ mode_change_tool = {
     "type": "function",
     "function": {
         "name": "update_workspace_settings",
-        "description": (
-            "Manage workspace CLI tool settings. "
-            "Can enable/disable CLI tools, switch execution engine "
-            "(Local / Docker Sandbox / ACP Protocol), "
-            "and change permission modes for each engine.\n\n"
-            "Permission modes:\n"
-            "  plan         - Read-only, deny all operations\n"
-            "  default      - Interactive, confirm each action\n"
-            "  auto-approve - Allow writes, deny destructive ops\n"
-            "  yolo         - Full autonomy, no confirmations\n"
-            "  cowork       - Same as yolo, collaborative mode"
-        ),
+    "description": (
+        "Manage workspace CLI tool settings. "
+        "Can enable/disable CLI tools, switch execution engine "
+        "(Local / Docker Sandbox / WSL Sandbox (Windows only) / ACP Protocol), "
+        "and change permission modes for each engine.\n\n"
+        "Permission modes:\n"
+        "  plan         - Read-only, deny all operations\n"
+        "  default      - Interactive, confirm each action\n"
+        "  auto-approve - Allow writes, deny destructive ops\n"
+        "  yolo         - Full autonomy, no confirmations\n"
+        "  cowork       - Same as yolo, collaborative mode"
+    ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -108,11 +123,12 @@ mode_change_tool = {
                 },
                 "engine": {
                     "type": "string",
-                    "enum": ["local", "ds", "acp"],
+                    "enum": ["local", "ds", "wsl", "acp"],
                     "description": (
                         "Execution engine: "
                         "local (local environment), "
                         "ds (Docker Sandbox), "
+                        "wsl (WSL Sandbox - Windows only), "
                         "acp (ACP Protocol - unified CLI agent interface)"
                     )
                 },
@@ -130,6 +146,11 @@ mode_change_tool = {
                     "type": "string",
                     "enum": ["plan", "default", "auto-approve", "yolo", "cowork", "goal"],
                     "description": "Permission mode for ACP Protocol sub-agents"
+                },
+                "wsl_permission_mode": {
+                    "type": "string",
+                    "enum": ["plan", "default", "auto-approve", "yolo", "cowork", "goal"],
+                    "description": "Permission mode for WSL Sandbox environment (Windows only)"
                 }
             }
         }

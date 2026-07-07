@@ -2106,6 +2106,7 @@ formatMessage(content, index) {
           this.codeSettings = data.data.codeSettings || this.codeSettings;
           this.CLISettings = data.data.CLISettings || this.CLISettings;
           this.acpSettings = data.data.acpSettings || this.acpSettings;
+          this.wslSettings = data.data.wslSettings || this.wslSettings;
           this.visionControlSettings = data.data.visionControlSettings || this.visionControlSettings;
           this.loveSettings = data.data.loveSettings || this.loveSettings;
           this.diarySettings = data.data.diarySettings || this.diarySettings;
@@ -2189,6 +2190,7 @@ formatMessage(content, index) {
           this.codeSettings = data.data.codeSettings || this.codeSettings;
           this.CLISettings = data.data.CLISettings || this.CLISettings;
           this.acpSettings = data.data.acpSettings || this.acpSettings;
+          this.wslSettings = data.data.wslSettings || this.wslSettings;
           this.visionControlSettings = data.data.visionControlSettings || this.visionControlSettings;
           this.loveSettings = data.data.loveSettings || this.loveSettings;
           this.diarySettings = data.data.diarySettings || this.diarySettings;
@@ -2763,7 +2765,7 @@ formatMessage(content, index) {
             return;
         }
         const engine = this.CLISettings.engine;
-        const key = engine === 'ds' ? 'dsSettings' : engine === 'acp' ? 'acpSettings' : 'localEnvSettings';
+        const key = engine === 'ds' ? 'dsSettings' : engine === 'acp' ? 'acpSettings' : engine === 'wsl' ? 'wslSettings' : 'localEnvSettings';
         if (!this[key]) this[key] = {};
         this[key].permissionMode = modeValue;
         this.autoSaveSettings();
@@ -3640,6 +3642,10 @@ formatMessage(content, index) {
             }
 
             currentMsg.generationFinished = true;
+
+            if (this.isElectron && this.systemSettings.enableNotifications && !document.hasFocus()) {
+              window.electronAPI.showNotification('Super Agent Party', this.t('aiGenerationComplete'));
+            }
 
             if (this.ttsSettings.enabled) {
                 if (this.audioStartTime > this.audioCtx.currentTime) {
@@ -4758,6 +4764,7 @@ formatMessage(content, index) {
           qcSettings: this.qcSettings,
           dsSettings: this.dsSettings,
           localEnvSettings: this.localEnvSettings,
+          wslSettings: this.wslSettings,
           ocSettings: this.ocSettings,
           HASettings: this.HASettings,
           chromeMCPSettings: this.chromeMCPSettings,
@@ -11486,6 +11493,8 @@ processMarkdownStreamForTTS(message, deltaText, isFinal = false) {
       return this.localEnvSettings.permissionMode === 'goal';
     } else if (engine === 'ds') {
       return this.dsSettings.permissionMode === 'goal';
+    } else if (engine === 'wsl') {
+      return this.wslSettings.permissionMode === 'goal';
     } else {
       return this.acpSettings.permissionMode === 'goal';
     }
