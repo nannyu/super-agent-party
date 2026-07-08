@@ -1222,6 +1222,7 @@ formatFileUrl(originalUrl) {
       else if (key === 'system') {
         this.activeMenu = 'system';
         this.subMenu = 'general'; // 默认显示通用设置子页
+        this.loadAccountList(); // 加载账户列表
       }
       else {
         this.activeMenu = key;
@@ -8311,7 +8312,6 @@ handleCreateSlackSeparator(val) {
     checkMobile() {
       this.isMobile = window.innerWidth <= 768;
       this.isAssistantMode = window.innerWidth <= 350 && window.innerHeight <= 820;
-      this.isCapsuleMode = window.innerWidth <= 220 && window.innerHeight <= 100;
       if (this.isMobile) {
         this.MoreButtonDict = this.smallMoreButtonDict;
       }
@@ -10475,10 +10475,28 @@ processMarkdownStreamForTTS(message, deltaText, isFinal = false) {
                 if (response.ok) {
                     await this._streamTTSResponse(response, message, index, chunk_expressions, chunk_text, vrmIndex, isVrmSilent);
                     this.checkAudioPlayback();
+                } else {
+                    console.warn(`TTS chunk ${index} returned ${response.status}, skipping`);
+                    message.audioChunks[index] = {
+                        url: null,
+                        expressions: chunk_expressions,
+                        text: chunk_text,
+                        index,
+                        _failed: true
+                    };
+                    this.checkAudioPlayback();
                 }
             }
         } catch (error) {
             console.error(`TTS Chunk ${index} error:`, error);
+            message.audioChunks[index] = {
+                url: null,
+                expressions: chunk_expressions,
+                text: chunk_text,
+                index,
+                _failed: true
+            };
+            this.checkAudioPlayback();
         }
     },
 
@@ -10686,6 +10704,8 @@ processMarkdownStreamForTTS(message, deltaText, isFinal = false) {
                         this.TTSrunning = false; 
                     }
                     lastMessage._ttsRunning = false;
+                    // 全部播完后，把进度归位到第一块，UI 显示 1/totalChunks 而非越界
+                    lastMessage.currentChunk = 0;
                     try { fetch('/api/overlay/danmaku/clear', { method: 'POST' }).catch(()=>{}); } catch(e){}
                     if (resolve) resolve();
                     return;
@@ -10699,6 +10719,7 @@ processMarkdownStreamForTTS(message, deltaText, isFinal = false) {
                             this.TTSrunning = false; 
                         }
                         lastMessage._ttsRunning = false;
+                        lastMessage.currentChunk = 0;
                         try { fetch('/api/overlay/danmaku/clear', { method: 'POST' }).catch(()=>{}); } catch(e){}
                         if (resolve) resolve();
                         return;
@@ -10714,6 +10735,15 @@ processMarkdownStreamForTTS(message, deltaText, isFinal = false) {
         const rawVoice = lastMessage.chunks_voice[currentIndex] || '';
         const isVrmSilent = rawVoice.startsWith('danmaku_vrm_silent:');
         const actualVoice = isVrmSilent ? rawVoice.replace('danmaku_vrm_silent:', '') : rawVoice;
+
+        // --- 防御：合成的占位失败块直接跳过，避免 queue 死等 ---
+        if (audioChunk && audioChunk._failed) {
+            console.warn(`Skipping failed TTS chunk ${currentIndex}`);
+            lastMessage.currentChunk++;
+            setTimeout(() => this.checkAudioPlayback(message, resolve), 0);
+            return;
+        }
+
         
         // 计算偏移
         const offset = lastMessage.chunks_voice.filter(v => v.startsWith('danmaku_vrm_silent:')).length;
@@ -10890,6 +10920,8 @@ processMarkdownStreamForTTS(message, deltaText, isFinal = false) {
 
     // 停止所有正在播放的音频
     stopAllAudioPlayback() {
+      // --- 与 sendMessage 入口对齐：任何调用本函数的路径都强制释放弹幕队列锁 ---
+      this.TTSrunning = false;
       // --- 核心修复 1：给所有消息打上"终止循环"的标记 ---
       this.messages.forEach(message => {
         message.audioAborted = true; 
@@ -14175,16 +14207,24 @@ isTargetPlatform(behavior, platformKey) {
       window.electronAPI.windowAction('show');
     }
   },
-  async toggleCapsuleMode() {
-    this.activeMenu = 'home';
-    this.isPttMode = false;
-    if (this.isCapsuleMode && !this.isMac) {
-      window.electronAPI.windowAction('maximize') // 恢复默认大小
-    } else{
-      window.electronAPI.toggleWindowSize(210, 80);
+  async toggleDynamicIsland() {
+    if (!this.isDynamicIsland) {
+      if (isElectron && window.electronAPI.openIslandWindow) {
+        window.electronAPI.openIslandWindow();
+        this.isDynamicIsland = true;
+        if (window.electronAPI.onIslandWindowClosed) {
+          window.electronAPI.onIslandWindowClosed(() => {
+            this.isDynamicIsland = false;
+          });
+        }
+      }
+    } else {
+      if (isElectron && window.electronAPI.closeIslandWindow) {
+        window.electronAPI.closeIslandWindow();
+      }
+      this.isDynamicIsland = false;
     }
     this.sidePanelOpen = false;
-    this.isCapsuleMode = !this.isCapsuleMode;
   },
   toggleMinimalMode() {
     if (!this.isMinimalMode) {
@@ -20397,6 +20437,154 @@ gotoAddExtension(){
         this.systemSettings.disclaimerAccepted = true;
         this.systemSettings.showDisclaimer = false;
         this.autoSaveSettings();
+      }
+    },
+
+    // ============================================================
+    // 账户管理方法
+    // ============================================================
+    async loadAccountList() {
+      if (!isElectron) return;
+      try {
+        const result = await window.electronAPI.accountsGetAll();
+        if (result) {
+          this.accountList = result.accounts;
+          this.isRootAccount = result.accounts.some(a => a.id === result.currentAccountId && a.type === 'root');
+          this.currentAccountInfo = result.accounts.find(a => a.id === result.currentAccountId) || null;
+        }
+      } catch (e) {
+        console.error('加载账户列表失败:', e);
+      }
+    },
+
+    async selectAccountDataPath() {
+      if (!isElectron) return;
+      try {
+        const result = await window.electronAPI.openDirectoryDialog();
+        if (result && result.filePaths && result.filePaths.length > 0) {
+          this.newAccountDataPath = result.filePaths[0];
+        }
+      } catch (e) {
+        console.error('选择目录失败:', e);
+      }
+    },
+
+    async confirmAddAccount() {
+      if (!this.newAccountDataPath) {
+        showNotification(this.t('pleaseSelectDataPath') || '请选择数据存储路径', 'warning');
+        return;
+      }
+
+      try {
+        const result = await window.electronAPI.accountsCreate(
+          this.newAccountName || null,
+          this.newAccountDataPath,
+          this.newAccountCloneFromRoot,
+          this.newAccountSetAsDefault
+        );
+
+        if (result.success) {
+          showNotification(this.t('accountCreated') || '新账户创建成功', 'success');
+          this.showAddAccountDialog = false;
+          this.newAccountName = '';
+          this.newAccountDataPath = '';
+          this.newAccountCloneFromRoot = true;
+          this.newAccountSetAsDefault = false;
+          await this.loadAccountList();
+        } else {
+          showNotification(result.error || (this.t('accountCreateFailed') || '账户创建失败'), 'error');
+        }
+      } catch (e) {
+        console.error('创建账户失败:', e);
+        showNotification(this.t('accountCreateFailed') || '账户创建失败', 'error');
+      }
+    },
+
+    confirmDeleteAccount(acc) {
+      this.deleteAccountId = acc.id;
+      this.deleteAccountRemoveFolder = true;
+      this.showDeleteAccountDialog = true;
+    },
+
+    async confirmDeleteAccountAction() {
+      if (!this.deleteAccountId) return;
+      try {
+        const result = await window.electronAPI.accountsDelete(this.deleteAccountId, this.deleteAccountRemoveFolder);
+        if (result.success) {
+          showNotification(this.t('accountDeleted') || '账户已删除', 'success');
+          this.showDeleteAccountDialog = false;
+          this.deleteAccountId = null;
+          await this.loadAccountList();
+        } else {
+          showNotification(result.error || (this.t('accountDeleteFailed') || '账户删除失败'), 'error');
+        }
+      } catch (e) {
+        console.error('删除账户失败:', e);
+        showNotification(this.t('accountDeleteFailed') || '账户删除失败', 'error');
+      }
+    },
+
+    renameAccountDialog(acc) {
+      this.renameAccountId = acc.id;
+      this.renameAccountName = acc.name;
+      this.showRenameAccountDialog = true;
+    },
+
+    async confirmRenameAccount() {
+      if (!this.renameAccountId || !this.renameAccountName) return;
+      try {
+        const result = await window.electronAPI.accountsRename(this.renameAccountId, this.renameAccountName);
+        if (result.success) {
+          showNotification(this.t('accountRenamed') || '账户已重命名', 'success');
+          this.showRenameAccountDialog = false;
+          this.renameAccountId = null;
+          this.renameAccountName = '';
+          await this.loadAccountList();
+        } else {
+          showNotification(result.error || (this.t('accountRenameFailed') || '重命名失败'), 'error');
+        }
+      } catch (e) {
+        console.error('重命名失败:', e);
+      }
+    },
+
+    async setDefaultAccount(accountId) {
+      try {
+        const result = await window.electronAPI.accountsSetDefault(accountId);
+        if (result.success) {
+          showNotification(this.t('defaultAccountSet') || '默认账户已设置', 'success');
+          await this.loadAccountList();
+        } else {
+          showNotification(result.error || (this.t('defaultAccountSetFailed') || '设置失败'), 'error');
+        }
+      } catch (e) {
+        console.error('设置默认账户失败:', e);
+      }
+    },
+
+    async launchAccount(accountId) {
+      try {
+        const result = await window.electronAPI.accountsLaunch(accountId);
+        if (result.success) {
+          showNotification(this.t('accountLaunching') || '正在启动新实例...', 'success');
+        } else {
+          showNotification(result.error || (this.t('accountLaunchFailed') || '启动失败'), 'error');
+        }
+      } catch (e) {
+        console.error('启动账户失败:', e);
+      }
+    },
+
+    async switchToAccount(accountId) {
+      try {
+        await this.autoSaveSettings();
+        await new Promise(r => setTimeout(r, 200));
+        const result = await window.electronAPI.accountsSwitch(accountId);
+        if (!result.success) {
+          showNotification(result.error || (this.t('accountSwitchFailed') || '切换失败'), 'error');
+        }
+      } catch (e) {
+        console.error('切换账户失败:', e);
       }
     },
   

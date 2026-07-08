@@ -804,6 +804,7 @@ const app = Vue.createApp({
     
     if (isElectron) {
       this.checkServerPort();
+      this.loadAccountList();
     }
     
     window.addEventListener('keydown', this.handleKeyDown)
@@ -814,6 +815,10 @@ const app = Vue.createApp({
     if (isElectron) {
       this.isMac = window.electron.isMac;
       this.isWindows = window.electron.isWindows;
+    }
+
+    if (!this.isWindows && this.CLISettings.engine === 'wsl') {
+      this.CLISettings.engine = 'local';
     }
     
     this.initWebSocket();

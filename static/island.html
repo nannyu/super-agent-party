@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>灵动岛</title>
+  <link rel="stylesheet" href="fontawesome/css/all.min.css">
+  <link rel="stylesheet" href="css/island.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: transparent !important;
+      font-family: 'OpenRunde', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      user-select: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="island-container">
+    <div id="island"
+         ref="island"
+         :class="{ quick: isQuickView || showMusicQuick, large: isLargeView }"
+         @mouseenter="onIslandEnter"
+         @mouseleave="onIslandLeave"
+         @click="onIslandClick"
+         @pointerdown="onPointerDown"
+         @pointermove="onPointerMove"
+         @pointerup="onPointerUp"
+         @wheel.passive="onWheel">
+
+      <!-- Still / Quick 视图 -->
+      <template v-if="!isLargeView">
+
+        <!-- Still 模式 + 无音乐：纯时间 -->
+        <div class="still-content" v-if="mode === 'still' && !showMusicQuick">
+          <span class="still-time">{{ currentTime || '--:--' }}</span>
+        </div>
+
+        <!-- Quick 模式 + 无音乐：天气 + 时间/日期（占满） -->
+        <div class="quick-content" v-if="isQuickView && !showMusicQuick">
+          <div class="quick-weather" v-if="weatherTemp !== null">
+            <i :class="'fa-solid ' + weatherIcon"></i>
+            <span>{{ weatherTemp }}°</span>
+          </div>
+          <span class="quick-time" style="border:none;padding:0 10px">{{ currentTime }}</span>
+          <span class="quick-date">{{ currentDate }}</span>
+        </div>
+
+        <!-- 音乐播放中：歌名跑马灯（占满整个矩形） -->
+        <div class="quick-content music-full" v-if="showMusicQuick && hasMusic">
+          <div class="artwork-wrap">
+            <i class="fa-solid fa-music"></i>
+          </div>
+          <div class="marquee-box">
+            <div class="marquee-track" ref="marqueeTrack">
+              <span class="marquee-item">{{ currentTrack }}{{ currentArtist ? '  \u2022  ' + currentArtist : '' }}</span><span class="marquee-item">{{ currentTrack }}{{ currentArtist ? '  \u2022  ' + currentArtist : '' }}</span>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- Large 视图 -->
+      <template v-if="isLargeView">
+        <div class="panels-wrapper" ref="panelsWrapper">
+          <!-- 面板1: 天气/时间 -->
+          <div class="panel weather-panel" :style="{ transform: panelTransforms.p0 }">
+            <div class="weather-icon-large" v-if="weatherTemp !== null">
+              <i :class="'fa-solid ' + weatherIcon"></i>
+            </div>
+            <div class="weather-icon-large" v-else>
+              <i class="fa-solid fa-cloud" style="opacity:0.3"></i>
+            </div>
+            <div class="weather-temp" v-if="weatherTemp !== null">{{ weatherTemp }}°C</div>
+            <div class="weather-temp" v-else>--°C</div>
+            <div class="weather-desc">{{ weatherDesc }}</div>
+            <div class="weather-divider"></div>
+            <div class="weather-time">{{ currentTime || '--:--' }}</div>
+            <div class="weather-date">{{ currentDate }}</div>
+          </div>
+
+          <!-- 面板2: 音乐 -->
+          <div class="panel music-panel" :style="{ transform: panelTransforms.p1 }">
+            <div class="large-artwork">
+              <i class="fa-solid fa-music"></i>
+            </div>
+            <div class="large-info">
+              <div class="large-title">{{ currentTrack || '未在播放' }}</div>
+              <div class="large-artist">{{ currentArtist }}</div>
+            </div>
+            <div class="large-controls">
+              <button class="ctrl-btn-lg" @click.stop="sendMusicControl('prev')">
+                <i class="fa-solid fa-backward-step"></i>
+              </button>
+              <button class="ctrl-btn-lg play-btn-lg" @click.stop="togglePlay">
+                <i :class="'fa-solid ' + playIcon"></i>
+              </button>
+              <button class="ctrl-btn-lg" @click.stop="sendMusicControl('next')">
+                <i class="fa-solid fa-forward-step"></i>
+              </button>
+            </div>
+            <div class="large-vol">
+              <i class="fa-solid fa-volume-low vol-icon-lg"></i>
+              <input type="range" class="vol-slider-lg" min="0" max="100"
+                     :value="volume"
+                     @input="volume = parseInt($event.target.value)"
+                     @change.stop="sendMusicControl('volume', volume)">
+              <i class="fa-solid fa-volume-high vol-icon-lg"></i>
+            </div>
+          </div>
+        </div>
+
+        <!-- 面板指示器 -->
+        <div class="panel-indicator">
+          <div class="panel-dot" :class="{ active: activePanel === 0 }"
+               @click.stop="switchPanel(0)"></div>
+          <div class="panel-dot" :class="{ active: activePanel === 1 }"
+               @click.stop="switchPanel(1)"></div>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <script src="libs/vue.global.prod.js"></script>
+  <script src="island-app.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      const app = createIslandApp();
+      const vm = app.mount('#island-container');
+
+      window.addEventListener('focusout', function () {
+        setTimeout(function () {
+          const activeTag = document.activeElement && document.activeElement.tagName;
+          if (activeTag !== 'INPUT' && activeTag !== 'TEXTAREA' && activeTag !== 'SELECT') {
+            if (!vm.isHovered) {
+              vm.mode = 'still';
+              vm.setMouseIgnore(true);
+            }
+          }
+        }, 100);
+      });
+
+      window.addEventListener('beforeunload', function () {
+        vm.stopMusicPoll();
+        vm.stopMarquee();
+        vm.unregisterMcpTools();
+        if (vm.reconnectTimer) clearTimeout(vm.reconnectTimer);
+      });
+    });
+  </script>
+</body>
+</html>

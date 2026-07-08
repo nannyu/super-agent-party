@@ -10592,6 +10592,10 @@ code {
   color: #009688;
 }
 
+.card-icon.gold {
+  color: #d4a017; /* 金色 - 用于添加新账户等高级操作 */
+}
+
 /* =========================================
    Dashboard 建议标签（Chips）中收藏星星显色
    ========================================= */
@@ -14351,3 +14355,138 @@ body.has-custom-bg #app {
   border-top: 1px dashed var(--el-border-color-light);
 }
 .diary-detail-pushed-label { font-size: 12px; color: var(--el-text-color-secondary); }
+
+/* =========================================
+   账户管理页面
+   ========================================= */
+.account-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.account-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 12px;
+  transition: all 0.2s;
+}
+
+.account-card:hover {
+  border-color: var(--el-color-primary-light-5);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+
+.account-card.is-default {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+
+.account-card.is-current {
+  border-color: var(--el-color-success);
+}
+
+.account-card-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 1;
+  min-width: 0;
+}
+
+.account-card-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.account-card-icon.root {
+  background: linear-gradient(135deg, #f9d423, #f83600);
+  color: #fff;
+}
+
+.account-card-icon.user {
+  background: linear-gradient(135deg, #4facfe, #00f2fe);
+  color: #fff;
+}
+
+.account-card-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.account-card-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.account-type-tag {
+  font-size: 10px;
+  padding: 1px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.account-type-tag.root {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.account-type-tag.user {
+  background: #cce5ff;
+  color: #004085;
+}
+
+.account-current-tag {
+  font-size: 10px;
+  padding: 1px 8px;
+  border-radius: 4px;
+  background: var(--el-color-success-light-9);
+  color: var(--el-color-success);
+  font-weight: 500;
+}
+
+.account-default-tag {
+  font-size: 10px;
+  padding: 1px 8px;
+  border-radius: 4px;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+  font-weight: 500;
+}
+
+.account-card-path {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-card-meta {
+  font-size: 11px;
+  color: var(--el-text-color-placeholder);
+  margin-top: 3px;
+}
+
+.account-card-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: 16px;
+}

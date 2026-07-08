@@ -349,6 +349,15 @@
         return String(t).replace(/[&<>"']/g, function(c){ return m[c]; });
       }
 
+      function filterNonStandardTags(text) {
+        return text.replace(/<(\/?)([^\s>/>]+)([^>]*)>/g, function(match, slash, tagName, attrs) {
+          var lower = tagName.toLowerCase();
+          if (lower === 'think') return match;
+          if (/^[a-zA-Z][a-zA-Z0-9-]*$/.test(tagName)) return match;
+          return '';
+        });
+      }
+
       function splitBlocks(html) {
         var div = document.createElement('div');
         div.innerHTML = html;
@@ -401,8 +410,9 @@
       }
 
       function appendBubbles(raw, wrapper) {
+        var filtered = filterNonStandardTags(raw);
         var blks;
-        try { blks = splitBlocks(md.render(raw)); }
+        try { blks = splitBlocks(md.render(filtered)); }
         catch(e) {
           var b = document.createElement('div');
           b.className = 'msg-bubble';

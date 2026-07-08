@@ -20,6 +20,7 @@ let vrmWindows = [];
 let thaWindows = [];
 let shotOverlay = null
 let minimalWindow = null
+let dynamicIslandWindow = null
 let isMac = process.platform === 'darwin';
 const vmcSendSocket = dgram.createSocket('udp4'); // 发送复用同一 socket
 const MAX_LOG_LINES = 2000; // 保留最近2000行日志
@@ -346,6 +347,60 @@ function saveEnvVariable(key, value) {
 
 const globalConfig = loadEnvVariables();
 
+// ============================================================
+// 多账户管理
+// ============================================================
+let currentAccountId = null;
+let currentAccountDataPath = null;
+let launchAccountId = null;
+
+function getAccountsPath() {
+  return path.join(app.getPath('userData'), 'accounts.json');
+}
+
+function loadAccounts() {
+  const accountsPath = getAccountsPath();
+  if (fs.existsSync(accountsPath)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(accountsPath, 'utf8'));
+      return {
+        accounts: data.accounts || [],
+        defaultAccountId: data.defaultAccountId || null
+      };
+    } catch (e) {
+      console.error('[Accounts] 加载账户列表失败:', e);
+    }
+  }
+  return { accounts: [], defaultAccountId: null };
+}
+
+function saveAccounts(data) {
+  const accountsPath = getAccountsPath();
+  const dir = path.dirname(accountsPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(accountsPath, JSON.stringify(data, null, 2), 'utf8');
+  console.log('[Accounts] 账户列表已保存');
+}
+
+function getAccountById(id) {
+  const data = loadAccounts();
+  return data.accounts.find(a => a.id === id) || null;
+}
+
+// ============================================================
+// CLI 参数解析：--account=<id> 用于多账户启动
+// ============================================================
+const ACCOUNT_ARG_KEY = '--account=';
+for (const arg of process.argv) {
+  if (arg.startsWith(ACCOUNT_ARG_KEY)) {
+    launchAccountId = arg.substring(ACCOUNT_ARG_KEY.length);
+    console.log('[Accounts] 检测到 --account 参数:', launchAccountId);
+    break;
+  }
+}
+
 // 定义全局变量
 let SESSION_CDP_PORT = 0; // 初始为0
 let IS_INTERNAL_MODE_ACTIVE = false;
@@ -382,6 +437,207 @@ async function findAvailablePort(startPort = DEFAULT_PORT, maxAttempts = 20000) 
   throw new Error(`无法找到可用端口，已尝试 ${startPort} 到 ${startPort + maxAttempts - 1}`)
 }
 
+// ============================================================
+// 获取已被其他账户占用的端口列表
+// ============================================================
+function getUsedPortsByOtherAccounts() {
+  const data = loadAccounts();
+  const used = [];
+  for (const acc of data.accounts) {
+    if (acc.lastPort && acc.id !== currentAccountId) {
+      used.push(acc.lastPort);
+    }
+  }
+  return used;
+}
+
+// ============================================================
+// 获取账户的首选启动端口
+// ============================================================
+async function getStartPortForAccount(accountData) {
+  // 获取其他账户占用的端口
+  const usedPorts = getUsedPortsByOtherAccounts();
+  
+  // 如果该账户有 lastPort，优先尝试
+  if (accountData.lastPort) {
+    // 检查 lastPort 是否被其他账户占用
+    if (!usedPorts.includes(accountData.lastPort)) {
+      const available = await isPortAvailable(accountData.lastPort);
+      if (available) {
+        return accountData.lastPort;
+      }
+    }
+  }
+  
+  // 自动分配，从 DEFAULT_PORT 开始，避开已占用端口
+  let port = DEFAULT_PORT;
+  while (usedPorts.includes(port) || !(await isPortAvailable(port))) {
+    port++;
+    if (port > DEFAULT_PORT + 20000) {
+      throw new Error('无法找到可用端口');
+    }
+  }
+  return port;
+}
+
+// ============================================================
+// 账户选择窗口
+// ============================================================
+async function showAccountSelectionWindow(registry) {
+  return new Promise((resolve) => {
+    const win = new BrowserWindow({
+      width: 480,
+      height: 520,
+      resizable: false,
+      frame: false,
+      titleBarStyle: 'hiddenInset',
+      show: false,
+      icon: path.join(__dirname, 'static/source/icon.png'),
+      webPreferences: {
+        nodeIntegration: true,
+        sandbox: false,
+        contextIsolation: false,
+      }
+    });
+
+    const accountsHtml = registry.accounts.map(acc => {
+      const typeLabel = acc.type === 'root' ? 'Root' : 'User';
+      const lastLaunch = acc.lastLaunched
+        ? new Date(acc.lastLaunched).toLocaleString()
+        : '从未启动';
+      const isDefault = acc.id === registry.defaultAccountId ? 'default' : '';
+      return `<div class="account-item ${isDefault}" data-id="${acc.id}">
+        <div class="acc-icon">${acc.type === 'root' ? '👑' : '👤'}</div>
+        <div class="acc-info">
+          <div class="acc-name">${acc.name} <span class="acc-type-badge ${acc.type}">${typeLabel}</span></div>
+          <div class="acc-path">${acc.dataPath}</div>
+          <div class="acc-last">上次启动: ${lastLaunch}</div>
+        </div>
+      </div>`;
+    }).join('');
+
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    user-select: none;
+    -webkit-app-region: drag;
+    overflow: hidden;
+  }
+  .header {
+    padding: 24px 28px 16px;
+    text-align: center;
+  }
+  .header h1 { font-size: 20px; font-weight: 600; color: #fff; }
+  .header p { font-size: 13px; color: #888; margin-top: 6px; }
+  .account-list {
+    padding: 0 20px;
+    max-height: 320px;
+    overflow-y: auto;
+  }
+  .account-list::-webkit-scrollbar { width: 4px; }
+  .account-list::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
+  .account-item {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 16px;
+    margin-bottom: 8px;
+    background: #222244;
+    border: 2px solid transparent;
+    border-radius: 12px;
+    cursor: pointer;
+    -webkit-app-region: no-drag;
+    transition: all 0.2s;
+  }
+  .account-item:hover { background: #2a2a55; border-color: #4a4a8a; transform: translateY(-1px); }
+  .account-item.default { border-color: #4a90d9; }
+  .acc-icon { font-size: 28px; width: 42px; text-align: center; }
+  .acc-info { flex: 1; min-width: 0; }
+  .acc-name { font-size: 15px; font-weight: 600; color: #fff; }
+  .acc-type-badge { font-size: 10px; padding: 2px 8px; border-radius: 6px; margin-left: 6px; }
+  .acc-type-badge.root { background: #d4a017; color: #000; }
+  .acc-type-badge.user { background: #4a90d9; color: #fff; }
+  .acc-path { font-size: 11px; color: #666; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .acc-last { font-size: 11px; color: #555; margin-top: 2px; }
+  .footer {
+    padding: 16px 28px;
+    border-top: 1px solid #2a2a3e;
+    display: flex;
+    align-items: center;
+    -webkit-app-region: no-drag;
+  }
+  .footer label { font-size: 13px; color: #888; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+  .footer input[type="checkbox"] { accent-color: #4a90d9; width: 15px; height: 15px; }
+  .close-btn {
+    position: absolute;
+    top: 12px; right: 16px;
+    width: 28px; height: 28px;
+    background: transparent;
+    border: none;
+    color: #888;
+    font-size: 18px;
+    cursor: pointer;
+    border-radius: 6px;
+    -webkit-app-region: no-drag;
+  }
+  .close-btn:hover { background: #333; color: #fff; }
+</style>
+</head>
+<body>
+  <button class="close-btn" onclick="window.close()">&times;</button>
+  <div class="header">
+    <h1>选择账户</h1>
+    <p>选择一个账户以启动 Super Agent Party</p>
+  </div>
+  <div class="account-list" id="accountList">
+    ${accountsHtml}
+  </div>
+  <div class="footer">
+    <label><input type="checkbox" id="rememberChoice"> 记住我的选择（设为默认账户）</label>
+  </div>
+  <script>
+    const { ipcRenderer } = require('electron');
+    document.querySelectorAll('.account-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const accountId = item.dataset.id;
+        const remember = document.getElementById('rememberChoice').checked;
+        ipcRenderer.send('account-selected', { accountId, remember });
+      });
+    });
+  </script>
+</body>
+</html>`;
+
+    win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+
+    ipcMain.once('account-selected', (event, { accountId, remember }) => {
+      const account = registry.accounts.find(a => a.id === accountId);
+      if (remember && account) {
+        const data = loadAccounts();
+        data.defaultAccountId = accountId;
+        saveAccounts(data);
+      }
+      if (!win.isDestroyed()) win.close();
+      resolve(account);
+    });
+
+    win.on('close', () => {
+      if (!win.isDestroyed()) win.destroy();
+      resolve(null);
+    });
+
+    win.once('ready-to-show', () => {
+      win.show();
+    });
+  });
+}
 
 // 创建骨架屏窗口
 function createSkeletonWindow() {
@@ -447,7 +703,7 @@ function getAcpxPath() {
  * 启动后端服务
  * 逻辑：传 port 0 -> 捕获 REAL_PORT_FOUND -> 返回真实端口
  */
-async function startBackend() {
+async function startBackend(startPort = DEFAULT_PORT, dataDir = null) {
   return new Promise((resolve, reject) => {
     try {
       console.log('🔍 准备启动后端进程...');
@@ -461,7 +717,7 @@ async function startBackend() {
           ...process.env,
           NODE_ENV: isDev ? 'development' : 'production',
           PYTHONIOENCODING: 'utf-8',
-          PYTHONUNBUFFERED: '1', // 强制 Python 实时刷新缓冲区
+          PYTHONUNBUFFERED: '1',
           ELECTRON_NODE_EXEC: process.execPath, 
           ELECTRON_NPM_CLI: npmCliPath,
           ELECTRON_RESOURCES_PATH: app.isPackaged ? process.resourcesPath : path.join(__dirname),
@@ -469,26 +725,40 @@ async function startBackend() {
         }
       };
 
+      // 多账户：仅对非 root 账户通过环境变量强制数据目录
+      // root 账户使用 Python 后端默认机制（path_config.json 或系统默认目录）
+      if (dataDir && currentAccountId) {
+        const acct = getAccountById(currentAccountId);
+        if (acct && acct.type !== 'root') {
+          spawnOptions.env.SUPER_AGENT_PARTY_DATA_DIR = dataDir;
+          console.log(`[Accounts] 注入 user 账户数据目录: ${dataDir}`);
+        }
+      }
+
       if (process.platform === 'win32') {
         spawnOptions.windowsHide = !isDev;
       }
 
-      // 获取 Host 配置
       const BACKEND_HOST = (globalConfig?.networkVisible === 'global') ? '0.0.0.0' : '127.0.0.1';
 
       let execPath = "";
       let backendArgs = [];
+      const portStr = String(startPort);
 
       if (isDev) {
         execPath = pythonExec;
-        // 使用 -u 确保输出不被缓存，即便在 import 很多库的情况下
-        backendArgs = ['-u', 'server.py', '--host', BACKEND_HOST, '--port', '3456'];
+        backendArgs = ['-u', 'server.py', '--host', BACKEND_HOST, '--port', portStr];
       } else {
         const serverExecutable = process.platform === 'win32' ? 'server.exe' : 'server';
         const resourcesPath = process.resourcesPath || path.join(process.execPath, '..', 'resources');
         execPath = path.join(resourcesPath, 'server', serverExecutable);
-        backendArgs = ['--host', BACKEND_HOST, '--port', '3456'];
+        backendArgs = ['--host', BACKEND_HOST, '--port', portStr];
         spawnOptions.cwd = path.dirname(execPath);
+      }
+
+      // 传递数据目录给后端
+      if (dataDir) {
+        backendArgs.push('--data-dir', dataDir);
       }
 
       console.log(`🚀 执行路径: ${execPath}`);
@@ -566,7 +836,7 @@ async function waitForBackend() {
       if (response.ok) {
         console.log('✨ 后端健康检查通过！');
         if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('backend-ready', { port: PORT });
+          mainWindow.webContents.send('backend-ready', { host: HOST, port: PORT });
         }
         return;
       }
@@ -690,46 +960,18 @@ function setupAutoUpdater() {
 
 const PROTOCOL = 'sap';
 
-// --- 1. 尽早获取单实例锁 ---
-const gotTheLock = app.requestSingleInstanceLock();
-
-// --- 2. 如果不是第一个实例，直接退出，不要执行任何其他代码 ---
-if (!gotTheLock) {
-  // 在 Windows 上，第二个实例启动是因为点击了协议链接
-  // 我们需要解析参数传给第一个实例，然后立即退出
-  const startUrl = process.argv.find(arg => arg.startsWith(`${PROTOCOL}://`));
-  if (startUrl) {
-    // 这里其实不需要做什么，因为 second-instance 事件会在第一个实例触发
-    // 第二个实例直接退出即可
-    console.log('Second instance detected with URL:', startUrl);
-  }
-  app.quit();
-  return; // ← 关键：直接返回，阻止后续所有代码执行
-}
-
-// --- 3. 只有第一个实例才会执行到这里 ---
+// ============================================================
+// 多账户：移除单实例锁，支持多进程
+// ============================================================
 let pendingExtensionUrl = null;
 
-// Windows 冷启动处理（第一个实例启动时就带有协议参数）
+// 协议 URL 检测
 const startUrl = process.argv.find(arg => arg.startsWith(`${PROTOCOL}://`));
 if (startUrl) {
   pendingExtensionUrl = startUrl;
 }
 
-app.on('second-instance', (event, commandLine) => {
-  // 第二个实例启动时触发，在这里激活第一个实例的窗口并处理 URL
-  if (mainWindow) {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
-  }
-  
-  // 解析命令行参数中的 URL
-  const url = commandLine.find(arg => arg.startsWith(`${PROTOCOL}://`));
-  handleProtocolUrl(url);
-});
-
-// 注册协议（只在第一个实例中执行）
+// 注册协议
 if (process.defaultApp) {
   if (process.argv.length >= 2) {
     app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [path.resolve(process.argv[1])]);
@@ -737,6 +979,34 @@ if (process.defaultApp) {
 } else {
   app.setAsDefaultProtocolClient(PROTOCOL);
 }
+
+// 协议链接处理函数
+function handleProtocolUrl(url) {
+  if (!url) return;
+  try {
+    const urlObj = new URL(url);
+    if (urlObj.hostname === 'install') {
+      const type = urlObj.searchParams.get('type');
+      const repo = urlObj.searchParams.get('repo');
+      const mcpType = urlObj.searchParams.get('mcpType');
+      const config = urlObj.searchParams.get('config');
+      if (repo || config) {
+        const payload = { type, repo, mcpType, config };
+        if (mainWindow && mainWindow.webContents && !mainWindow.webContents.isLoading()) {
+          mainWindow.webContents.send('remote-install-any', payload);
+        } else {
+          pendingExtensionUrl = url;
+        }
+      }
+    }
+  } catch (e) { console.error('协议解析失败:', e); }
+}
+
+// macOS open-url 事件
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  handleProtocolUrl(url);
+});
 
 ipcMain.handle('get-window-size', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
@@ -748,11 +1018,100 @@ app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
 app.commandLine.appendSwitch('enable-features', 'NetworkService,NetworkServiceInProcess');
 app.commandLine.appendSwitch('disable-features', 'CrossOriginOpenerPolicy,SameSiteByDefaultCookies,CookiesWithoutSameSiteMustBeSecure,LogAds');
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
-// 只有在获得锁（第一个实例）时才执行初始化
+// 多账户启动初始化
 app.whenReady().then(async () => {
   try {
 
+    // ============================================================
+    // 账户解析：决定以哪个账户启动
+    // ============================================================
+    let accountData = null;
 
+    if (launchAccountId) {
+      // 以 --account=<id> 参数指定的账户启动
+      accountData = getAccountById(launchAccountId);
+      if (!accountData) {
+        console.error(`[Accounts] 账户 ${launchAccountId} 不存在，回退默认`);
+        launchAccountId = null;
+      }
+    }
+
+    if (!launchAccountId) {
+      // 主入口：加载账户注册表
+      const registry = loadAccounts();
+
+      if (registry.accounts.length === 0) {
+        // 首次运行，自动创建 root 账户
+        const rootAccount = {
+          id: require('crypto').randomUUID(),
+          name: '主账户',
+          type: 'root',
+          dataPath: app.getPath('userData'),
+          isDefault: true,
+          createdAt: new Date().toISOString(),
+          lastLaunched: new Date().toISOString(),
+          lastPort: null,
+          clonedFrom: null
+        };
+        registry.accounts.push(rootAccount);
+        registry.defaultAccountId = rootAccount.id;
+        saveAccounts(registry);
+        accountData = rootAccount;
+        console.log('[Accounts] 首次运行，已创建 root 账户');
+      } else if (registry.defaultAccountId) {
+        // 有默认账户，直接用
+        accountData = registry.accounts.find(a => a.id === registry.defaultAccountId);
+        if (accountData) {
+          console.log(`[Accounts] 使用默认账户: ${accountData.name}`);
+        }
+      } else if (registry.accounts.length === 1) {
+        // 只有一个账户，直接用
+        accountData = registry.accounts[0];
+        console.log(`[Accounts] 唯一账户: ${accountData.name}`);
+      } else {
+        // 多账户且无默认，显示选择窗口
+        console.log('[Accounts] 多账户无默认，显示选择窗口');
+        accountData = await showAccountSelectionWindow(registry);
+        if (!accountData) {
+          console.log('[Accounts] 用户关闭了选择窗口，退出');
+          app.quit();
+          return;
+        }
+      }
+    }
+
+    if (!accountData) {
+      console.error('[Accounts] 无法确定启动账户，退出');
+      app.quit();
+      return;
+    }
+
+    currentAccountId = accountData.id;
+    currentAccountDataPath = accountData.dataPath;
+
+    // 更新 lastLaunched
+    {
+      const registry = loadAccounts();
+      const idx = registry.accounts.findIndex(a => a.id === accountData.id);
+      if (idx >= 0) {
+        registry.accounts[idx].lastLaunched = new Date().toISOString();
+        saveAccounts(registry);
+      }
+    }
+
+    // 确保数据目录存在
+    if (!fs.existsSync(currentAccountDataPath)) {
+      fs.mkdirSync(currentAccountDataPath, { recursive: true });
+      console.log(`[Accounts] 已创建数据目录: ${currentAccountDataPath}`);
+    }
+
+    // 端口分配：优先 lastPort，避开其他账户端口
+    const startPort = await getStartPortForAccount(accountData);
+    console.log(`[Accounts] 使用端口: ${startPort}`);
+
+    // ============================================================
+    // 原有启动逻辑
+    // ============================================================
     const partySession = session.fromPartition('persist:party-browser-session');
 
     partySession.on('will-download', (event, item, webContents) => {
@@ -814,8 +1173,18 @@ app.whenReady().then(async () => {
     // 创建骨架屏窗口
     createSkeletonWindow()
     if (global.vmcCfg.receive.enable) startVMCReceiver(global.vmcCfg);
-    // 启动后端服务（现在会自动查找可用端口）
-    await startBackend()
+    // 启动后端服务（传递账户端口和数据目录）
+    await startBackend(startPort, currentAccountDataPath)
+    // 更新账户的 lastPort
+    if (currentAccountId && PORT) {
+      const registry = loadAccounts();
+      const idx = registry.accounts.findIndex(a => a.id === currentAccountId);
+      if (idx >= 0) {
+        registry.accounts[idx].lastPort = PORT;
+        saveAccounts(registry);
+        console.log(`[Accounts] 更新账户端口: ${currentAccountId} -> ${PORT}`);
+      }
+    }
     ipcMain.handle('get-backend-logs', () => {
       return logBuffer.join('\n');
     });
@@ -875,11 +1244,19 @@ app.whenReady().then(async () => {
     // 添加获取端口信息的 IPC 处理
     ipcMain.handle('get-server-info', () => {
       return {
+        host: HOST,
         port: PORT,
         defaultPort: DEFAULT_PORT,
         isDefaultPort: PORT === DEFAULT_PORT
       }
     })
+
+    // 骨架屏 fade-out 动画完成通知：仅触发一次，用于触发主进程加载主页面
+    let skeletonFadeoutDone;
+    ipcMain.once('skeleton-fadeout-done', () => {
+      console.log('✅ 骨架屏 fade-out 完成，开始加载主页面');
+      if (skeletonFadeoutDone) skeletonFadeoutDone();
+    });
 
     ipcMain.handle('set-env', async (event, arg) => {
       saveEnvVariable(arg.key, arg.value);
@@ -889,6 +1266,264 @@ app.whenReady().then(async () => {
       app.relaunch();
       app.quit();
     })
+
+    // ============================================================
+    // 账户管理 IPC 处理器
+    // ============================================================
+    ipcMain.handle('accounts:get-all', () => {
+      const data = loadAccounts();
+      return {
+        accounts: data.accounts,
+        defaultAccountId: data.defaultAccountId,
+        currentAccountId: currentAccountId
+      };
+    });
+
+    ipcMain.handle('accounts:get-current', () => {
+      const data = loadAccounts();
+      const current = data.accounts.find(a => a.id === currentAccountId);
+      return {
+        account: current || null,
+        isRoot: current?.type === 'root'
+      };
+    });
+
+    ipcMain.handle('accounts:create', async (event, { name, dataPath, cloneFromRoot, setAsDefault }) => {
+      const data = loadAccounts();
+      const currentAccount = data.accounts.find(a => a.id === currentAccountId);
+
+      // 只有 root 账户可以创建
+      if (!currentAccount || currentAccount.type !== 'root') {
+        return { success: false, error: '只有 root 账户可以创建新账户' };
+      }
+
+      // 验证路径
+      if (!dataPath || !path.isAbsolute(dataPath)) {
+        return { success: false, error: '无效的数据存储路径' };
+      }
+
+      // 追加应用名子目录，与 appdirs.user_data_dir 行为一致
+      // Windows: <selected>/Super-Agent-Party, macOS: <selected>/Super-Agent-Party, Linux: <selected>/Super-Agent-Party
+      const actualDataPath = path.join(dataPath, 'Super-Agent-Party');
+
+      // 确保目标目录存在
+      if (!fs.existsSync(actualDataPath)) {
+        fs.mkdirSync(actualDataPath, { recursive: true });
+      }
+
+      // 检查目录是否为空（创建时的约束，但若克隆则忽略）
+      if (!cloneFromRoot) {
+        const dirContents = fs.readdirSync(actualDataPath).filter(f => f !== '.DS_Store');
+        if (dirContents.length > 0) {
+          return { success: false, error: '目标目录必须为空' };
+        }
+      }
+
+      // 克隆 root 数据
+      if (cloneFromRoot && currentAccount) {
+        // 从后端 API 获取 root 实际的 USER_DATA_DIR，
+        // 而非 Electron 的 userData 路径（两者可能不同）
+        let sourceDataPath = currentAccount.dataPath;
+        try {
+          const resp = await fetch(`http://${HOST}:${PORT}/api/system/data-path`);
+          if (resp.ok) {
+            const json = await resp.json();
+            if (json.path && fs.existsSync(json.path)) {
+              sourceDataPath = json.path;
+              console.log(`[Accounts] 从后端获取 root 实际数据路径: ${sourceDataPath}`);
+            }
+          }
+        } catch (e) {
+          console.log(`[Accounts] 无法从后端获取数据路径，使用记录的路径: ${sourceDataPath}`);
+        }
+
+        console.log(`[Accounts] 克隆 root 数据: ${sourceDataPath} -> ${actualDataPath}`);
+        copyFolderSync(sourceDataPath, actualDataPath);
+      }
+
+      // 创建子目录结构
+      const subDirs = ['logs', 'memory_cache', 'uploaded_files', 'tool_temp', 'agents', 'kb', 'ext', 'asr', 'tts', 'ebd'];
+      for (const dir of subDirs) {
+        const d = path.join(actualDataPath, dir);
+        if (!fs.existsSync(d)) {
+          fs.mkdirSync(d, { recursive: true });
+        }
+      }
+
+      const accountId = require('crypto').randomUUID();
+      const newAccount = {
+        id: accountId,
+        name: name || `账户 ${data.accounts.length + 1}`,
+        type: 'user',
+        dataPath: actualDataPath,
+        isDefault: false,
+        createdAt: new Date().toISOString(),
+        lastLaunched: null,
+        lastPort: null,
+        clonedFrom: cloneFromRoot ? currentAccount.id : null
+      };
+
+      data.accounts.push(newAccount);
+
+      if (setAsDefault) {
+        data.defaultAccountId = accountId;
+      }
+
+      saveAccounts(data);
+      console.log(`[Accounts] 新账户已创建: ${newAccount.name} (${accountId})`);
+      return { success: true, account: newAccount };
+    });
+
+    ipcMain.handle('accounts:delete', async (event, { accountId, removeFolder }) => {
+      const data = loadAccounts();
+      const account = data.accounts.find(a => a.id === accountId);
+
+      if (!account) {
+        return { success: false, error: '账户不存在' };
+      }
+
+      // root 账户不能删除
+      if (account.type === 'root') {
+        return { success: false, error: '不能删除 root 账户' };
+      }
+
+      // 删除文件夹
+      if (removeFolder && account.dataPath) {
+        try {
+          if (fs.existsSync(account.dataPath)) {
+            fs.rmSync(account.dataPath, { recursive: true, force: true });
+            console.log(`[Accounts] 已删除账户数据目录: ${account.dataPath}`);
+          }
+        } catch (e) {
+          console.error(`[Accounts] 删除目录失败: ${e.message}`);
+        }
+      }
+
+      // 从注册表移除
+      data.accounts = data.accounts.filter(a => a.id !== accountId);
+
+      // 如果被删除的是默认账户，清除默认
+      if (data.defaultAccountId === accountId) {
+        data.defaultAccountId = null;
+      }
+
+      saveAccounts(data);
+      return { success: true };
+    });
+
+    ipcMain.handle('accounts:rename', async (event, { accountId, newName }) => {
+      const data = loadAccounts();
+      const account = data.accounts.find(a => a.id === accountId);
+      if (!account) {
+        return { success: false, error: '账户不存在' };
+      }
+      account.name = newName;
+      saveAccounts(data);
+      return { success: true };
+    });
+
+    ipcMain.handle('accounts:set-default', async (event, { accountId }) => {
+      const data = loadAccounts();
+      const account = data.accounts.find(a => a.id === accountId);
+      if (!account) {
+        return { success: false, error: '账户不存在' };
+      }
+      data.defaultAccountId = accountId;
+      data.accounts.forEach(a => { a.isDefault = (a.id === accountId); });
+      saveAccounts(data);
+      return { success: true };
+    });
+
+    ipcMain.handle('accounts:launch', async (event, { accountId }) => {
+      const account = getAccountById(accountId);
+      if (!account) {
+        return { success: false, error: '账户不存在' };
+      }
+
+      const execPath = process.execPath;
+      const args = process.argv.slice(1).filter(a => !a.startsWith('--account='));
+      args.push(`--account=${accountId}`);
+
+      console.log(`[Accounts] 启动新实例: ${account.name} (${accountId})`);
+
+      const child = spawn(execPath, args, {
+        detached: true,
+        stdio: 'ignore',
+        shell: false
+      });
+      child.unref();
+
+      return { success: true };
+    });
+
+    ipcMain.handle('accounts:switch', async (event, { accountId }) => {
+      const account = getAccountById(accountId);
+      if (!account) {
+        return { success: false, error: '账户不存在' };
+      }
+
+      const execPath = process.execPath;
+      const args = process.argv.slice(1).filter(a => !a.startsWith('--account='));
+      args.push(`--account=${accountId}`);
+
+      console.log(`[Accounts] 切换账户: ${account.name} (${accountId})`);
+
+      const child = spawn(execPath, args, {
+        detached: true,
+        stdio: 'ignore',
+        shell: false
+      });
+      child.unref();
+
+      // 设置退出标志并退出当前实例
+      app.isQuitting = true;
+      setTimeout(() => {
+        app.quit();
+      }, 500);
+
+      return { success: true };
+    });
+
+    // 文件夹递归复制
+    function copyFolderSync(src, dest) {
+      if (!fs.existsSync(src)) return;
+      if (!fs.existsSync(dest)) {
+        fs.mkdirSync(dest, { recursive: true });
+      }
+      const skipDirs = ['Partitions', 'logs', 'Cache', 'Code Cache', 'GPUCache', 'blob_storage', 'Crashpad', 'Local Storage', 'Session Storage'];
+      const entries = fs.readdirSync(src, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.name === '.DS_Store') continue;
+        if (entry.name.startsWith('.')) continue;
+        if (entry.name.endsWith('-wal') || entry.name.endsWith('-shm') || entry.name.endsWith('-journal')) continue;
+        if (entry.isDirectory() && skipDirs.includes(entry.name)) {
+          console.log(`[Accounts] 跳过运行时目录: ${entry.name}`);
+          continue;
+        }
+        const srcPath = path.join(src, entry.name);
+        const destPath = path.join(dest, entry.name);
+        if (entry.isDirectory()) {
+          copyFolderSync(srcPath, destPath);
+        } else {
+          try {
+            fs.copyFileSync(srcPath, destPath);
+          } catch (e) {
+            if (e.code === 'EBUSY' || e.code === 'EACCES' || e.code === 'EPERM') {
+              // SQLite 等数据库文件可能被后端进程占用，改用读写方式复制
+              try {
+                const content = fs.readFileSync(srcPath);
+                fs.writeFileSync(destPath, content);
+                console.log(`[Accounts] 已通过读写方式复制被占用的文件: ${path.basename(srcPath)}`);
+              } catch (e2) {
+                console.log(`[Accounts] 跳过无法复制的文件: ${srcPath}`);
+              }
+            } else {
+              throw e;
+            }
+          }
+        }
+      }
+    }
 
     ipcMain.handle('save-screenshot-direct', async (event, { buffer }) => {
       // 1. 确定保存路径: userData/uploaded_files
@@ -1026,6 +1661,74 @@ app.whenReady().then(async () => {
 
     ipcMain.handle('get-minimal-window-state', async () => {
       return !!(minimalWindow && !minimalWindow.isDestroyed());
+    });
+
+    // === 灵动岛窗口 (全屏覆盖层) ===
+    ipcMain.handle('open-island-window', async () => {
+      if (dynamicIslandWindow && !dynamicIslandWindow.isDestroyed()) {
+        dynamicIslandWindow.close();
+        dynamicIslandWindow = null;
+      }
+
+      const primaryDisplay = screen.getPrimaryDisplay();
+      const { x, y, width: screenW, height: screenH } = primaryDisplay.bounds;
+      const isWindows = process.platform === 'win32';
+      const isLinux = process.platform === 'linux';
+      const windowType = isWindows ? 'toolbar' : 'panel';
+
+      dynamicIslandWindow = new BrowserWindow({
+        width: screenW,
+        height: screenH,
+        x: x,
+        y: y,
+        frame: false,
+        transparent: true,
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        hasShadow: false,
+        resizable: false,
+        backgroundColor: '#00000000',
+        type: windowType,
+        webPreferences: {
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: false,
+          webSecurity: false,
+          devTools: isDev,
+          preload: path.join(__dirname, 'static/js/preload.js')
+        }
+      });
+
+      remoteMain.enable(dynamicIslandWindow.webContents);
+
+      if (isLinux) {
+        dynamicIslandWindow.setIgnoreMouseEvents(true);
+      } else {
+        dynamicIslandWindow.setIgnoreMouseEvents(true, { forward: true });
+      }
+
+      await dynamicIslandWindow.loadURL(`http://${HOST}:${PORT}/island.html`);
+
+      dynamicIslandWindow.on('closed', () => {
+        dynamicIslandWindow = null;
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('island-window-closed');
+        }
+      });
+
+      return true;
+    });
+
+    ipcMain.handle('close-island-window', async () => {
+      if (dynamicIslandWindow && !dynamicIslandWindow.isDestroyed()) {
+        dynamicIslandWindow.close();
+        dynamicIslandWindow = null;
+      }
+      return true;
+    });
+
+    ipcMain.handle('get-island-window-state', async () => {
+      return !!(dynamicIslandWindow && !dynamicIslandWindow.isDestroyed());
     });
 
 
@@ -1319,6 +2022,13 @@ ipcMain.handle('upload-to-workspace', async (event, { targetDirPath, sourceFileP
       setTimeout(() => autoUpdater.quitAndInstall(), 500);
     });
             
+    // 等待骨架屏 fade-out 动画完成后再加载主页面，避免样式闪烁
+    // 兜底超时：若骨架屏异常未发送通知（如 preload 失败），最长等待 5s 后强制加载
+    await new Promise((resolve) => {
+      skeletonFadeoutDone = resolve;
+      setTimeout(() => resolve(), 5000);
+    });
+
     // 加载主页面
     await mainWindow.loadURL(`http://${HOST}:${PORT}`)
     ipcMain.on('set-language', (_, lang) => {
@@ -2170,42 +2880,18 @@ app.on('web-contents-created', (event, contents) => {
       contents.stopNavigation();
     }
   });
-  contents.on('before-input-event', (_ev, input) => {
-    const { alt, key } = input;
-    if (alt && (key === 'Left' || key === 'Right')) {
-      input.preventDefault = true;
-    }
-  });
-});
-app.commandLine.appendSwitch('disable-http-cache');
-
-// --- [修改后的 3] 协议处理核心函数 & IPC ---
-
-// 处理 URL 的逻辑
-// main.js 里的 handleProtocolUrl 关键部分
-function handleProtocolUrl(url) {
-  if (!url) return;
-  try {
-    const urlObj = new URL(url);
-    if (urlObj.hostname === 'install') {
-      const type = urlObj.searchParams.get('type'); // 'mcp'
-      const repo = urlObj.searchParams.get('repo');
-      const mcpType = urlObj.searchParams.get('mcpType'); // 'stdio' / 'sse'
-      const config = urlObj.searchParams.get('config'); // JSON 字符串
-
-      if (repo || config) {
-        const payload = { type, repo, mcpType, config };
-        if (mainWindow && mainWindow.webContents && !mainWindow.webContents.isLoading()) {
-          mainWindow.webContents.send('remote-install-any', payload); 
-        } else {
-          pendingExtensionUrl = url; 
+    contents.on('before-input-event', (_ev, input) => {
+        const { alt, key } = input;
+        if (alt && (key === 'Left' || key === 'Right')) {
+          input.preventDefault = true;
         }
-      }
-    }
-  } catch (e) { console.error('协议解析失败:', e); }
-}
+    });
+  });
 
-// 对应的 check-pending-install 也要改
+
+  app.commandLine.appendSwitch('disable-http-cache');
+
+// 对应的 check-pending-install
 ipcMain.handle('check-pending-install', () => {
   if (pendingExtensionUrl) {
     try {
@@ -2214,17 +2900,11 @@ ipcMain.handle('check-pending-install', () => {
         type: urlObj.searchParams.get('type'),
         repo: urlObj.searchParams.get('repo'),
         config: urlObj.searchParams.get('config'),
-        mcpType: urlObj.searchParams.get('mcpType') // 新增
+        mcpType: urlObj.searchParams.get('mcpType')
       };
       pendingExtensionUrl = null;
       return res;
     } catch (e) { return null; }
   }
   return null;
-});
-
-// macOS 监听 (Mac 下点击链接触发这里)
-app.on('open-url', (event, url) => {
-  event.preventDefault();
-  handleProtocolUrl(url);
 });

@@ -382,13 +382,12 @@ function updateElement(el, rawMarkdown, formatFn) {
           </el-icon>
         </el-button>
         <el-button 
-          @click="toggleCapsuleMode"
-          v-if="!isCapsuleMode&&!isAssistantMode&&!isMobile"
+          @click="toggleDynamicIsland"
           class="top-bar-btn"
           text
-          :title="t('CapsuleMode')">
+          :title="isDynamicIsland ? '关闭灵动岛' : '灵动岛'">
           <el-icon>
-            <i class="fa-solid fa-capsules"></i>
+            <i class="fa-solid fa-jar"></i>
           </el-icon>
         </el-button>
         <el-button 
@@ -843,7 +842,7 @@ function updateElement(el, rawMarkdown, formatFn) {
               }">
           
           <!-- 对话历史二级侧边栏 (保持用户原有结构) -->
-          <div class="chat-history-sidebar" v-show="showHistorySidebar && !isMobile && !isCapsuleMode">
+          <div class="chat-history-sidebar" v-show="showHistorySidebar && !isMobile ">
               <!-- A. 新建对话 -->
               <div class="history-header">
                 <el-button class="new-chat-btn" @click="startConversationInGroup()">
@@ -1008,7 +1007,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                   ref="chatAreaRef"
                   :class="{ collapsed: !chatAreaOpen }" 
                   v-show="chatAreaOpen">
-                <div class="messages-container" ref="messagesContainer" v-if="!isCapsuleMode" @click.capture="handleMessageLinkClick">
+                <div class="messages-container" ref="messagesContainer" @click.capture="handleMessageLinkClick">
                 
                  
                   <!-- 添加 is-group-mode 类 -->
@@ -1263,69 +1262,7 @@ function updateElement(el, rawMarkdown, formatFn) {
 
                   </div>
                 </div>
-                    <div class="button-group" v-if="isCapsuleMode">
-
-                      <el-tooltip :content="ASRrunning?t('listening'):isTyping?t('typing'):TTSrunning?t('speaking'):t('idle')" placement="top">
-                        <el-button
-                          v-if="isCapsuleMode"
-                          class="icon-btn status-btn"
-                          :type="ASRrunning||TTSrunning||isTyping ?  'primary':'default' "
-                          circle>
-                          <i v-if="ASRrunning" class="fa-solid fa-ear-listen"></i>
-                          <i v-else-if="isTyping" class="fa-solid fa-feather-pointed"></i>
-                          <i v-else-if="TTSrunning" class="fa-solid fa-head-side-cough"></i>
-                          <i v-else class="fa-solid fa-heart"></i>
-                        </el-button>
-                      </el-tooltip>
-
-                      <el-tooltip :content="t('visionControl')" placement="top">
-                        <el-button
-                          :disabled="!isElectron"
-                          @click="visionControlSettings.enabled = !visionControlSettings.enabled; handleVisionControlEnableToggle(visionControlSettings.enabled)"
-                          class="icon-btn web-search-btn"
-                          :type="visionControlSettings.enabled ? 'primary' : 'default'"
-                          v-if="isCapsuleMode"
-                          circle>
-                          <i class="fa-solid fa-arrow-pointer"></i>
-                        </el-button>
-                      </el-tooltip>
-
-                      <el-tooltip :content="t('screenshot')" placement="top">
-                        <el-button
-                          @click="toggleScreenshot(true)"
-                          class="icon-btn vision-btn"
-                          type="default"
-                          v-if="isElectron&&(MoreButtonDict.find(b => b.name === 'screenshotButton')?.enabled||isCapsuleMode)"
-                          circle>
-                          <i class="fa-solid fa-scissors"></i>
-                        </el-button>
-                      </el-tooltip>
-
-                      <el-tooltip :content="t('asr')" placement="top">
-                        <el-button
-                          @click="toggleASR"
-                          class="icon-btn asr-btn"
-                          :type="asrSettings.enabled ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'asrButton')?.enabled||isCapsuleMode"
-                          circle>
-                          <i class="fa-solid fa-microphone"></i>
-                        </el-button>
-                      </el-tooltip>
-
-                      <el-tooltip :content="t('tts')" placement="top">
-                        <el-button
-                          @click="ttsSettings.enabled=!ttsSettings.enabled;changeTTSstatus();"
-                          class="icon-btn asr-btn"
-                          :type="ttsSettings.enabled ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'ttsButton')?.enabled||isCapsuleMode"
-                          circle>
-                          <i v-if="ttsSettings.enabled" class="fa-solid fa-volume-high"></i>
-                          <i v-else class="fa-solid fa-volume-xmark"></i>
-                        </el-button>
-                      </el-tooltip>
-
-                    </div>
-                <div class="input-container" v-if="!isCapsuleMode">
+                <div class="input-container">
                   
                   <!-- ✨✨✨ 新增：统一的外层包裹器 ✨✨✨ -->
                   <!-- tabindex="-1" 是为了让 focus-within 生效更稳定 -->
@@ -1336,22 +1273,9 @@ function updateElement(el, rawMarkdown, formatFn) {
                     
                     <div class="button-group">
 
-                      <el-tooltip :content="ASRrunning?t('listening'):isTyping?t('typing'):TTSrunning?t('speaking'):t('idle')" placement="top">
-                        <el-button
-                          v-if="isCapsuleMode"
-                          class="icon-btn status-btn"
-                          :type="ASRrunning||TTSrunning||isTyping ?  'primary':'default' "
-                          circle>
-                          <i v-if="ASRrunning" class="fa-solid fa-ear-listen"></i>
-                          <i v-else-if="isTyping" class="fa-solid fa-feather-pointed"></i>
-                          <i v-else-if="TTSrunning" class="fa-solid fa-head-side-cough"></i>
-                          <i v-else class="fa-solid fa-heart"></i>
-                        </el-button>
-                      </el-tooltip>
-
                       <el-tooltip :content="t('newChat')" placement="top">
                         <el-button
-                          v-if="!isCapsuleMode"
+                         
                           @click="startConversationInGroup()"
                           class="icon-btn clear-btn"
                           type="primary"
@@ -1374,7 +1298,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                         <el-button
                           @click="handleAllBriefly"
                           class="icon-btn history-btn"
-                          v-if="MoreButtonDict.find(b => b.name === 'brieflyButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'brieflyButton')?.enabled"
                           :type="allBriefly ? 'primary' : 'default'"
                           circle>
                           <i class="fa-solid fa-asterisk"></i>
@@ -1385,7 +1309,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                         <el-button
                           @click="isForceScrollToBottom = !isForceScrollToBottom; autoSaveSettings()"
                           class="icon-btn history-btn"
-                          v-if="MoreButtonDict.find(b => b.name === 'forceScrollButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'forceScrollButton')?.enabled"
                           :type="isForceScrollToBottom ? 'primary' : 'default'"
                           circle>
                           <i class="fa-solid fa-scroll"></i>
@@ -1396,7 +1320,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           <el-button 
                               @click="toggleInputExpand"
                               class="icon-btn expand-btn"
-                              v-if="MoreButtonDict.find(b => b.name === 'expandButton')?.enabled&&!isCapsuleMode"
+                              v-if="MoreButtonDict.find(b => b.name === 'expandButton')?.enabled"
                               :type="isInputExpanded ? 'primary' : 'default'"
                               circle>
                               <i :class="isInputExpanded ? 'fa-solid fa-down-left-and-up-right-to-center' : 'fa-solid fa-up-right-and-down-left-from-center'"></i>
@@ -1408,7 +1332,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="browseAllFiles" 
                           class="icon-btn file-btn"
                           :type="(hasFiles || hasImages) ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'fileButton')?.enabled && !isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'fileButton')?.enabled "
                           circle>
                           <i class="fa-solid fa-paperclip"></i>
                         </el-button>
@@ -1419,7 +1343,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="fastSettings.enabled = !fastSettings.enabled; autoSaveSettings()"
                           class="icon-btn deep-think-btn"
                           :type="fastSettings.enabled ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'fastResponseButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'fastResponseButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-gauge-high"></i>
                         </el-button>
@@ -1430,7 +1354,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="reasonerSettings.enabled = !reasonerSettings.enabled; autoSaveSettings()"
                           class="icon-btn deep-think-btn"
                           :type="reasonerSettings.enabled ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'reasonerButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'reasonerButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-atom"></i>
                         </el-button>
@@ -1441,7 +1365,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="toolsSettings.deepsearch.enabled = !toolsSettings.deepsearch.enabled; autoSaveSettings()"
                           class="icon-btn deep-search-btn"
                           :type="toolsSettings.deepsearch.enabled ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'deepSearchButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'deepSearchButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-flask"></i>
                         </el-button>
@@ -1452,7 +1376,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="visionSettings.enabled = !visionSettings.enabled; handleVisionEnableToggle(visionSettings.enabled)"
                           class="icon-btn vision-btn"
                           :type="visionSettings.enabled ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'visionButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'visionButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-camera"></i>
                         </el-button>
@@ -1463,7 +1387,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="visionSettings.desktopVision = !visionSettings.desktopVision; autoSaveSettings()"
                           class="icon-btn vision-btn"
                           :type="visionSettings.desktopVision ? 'primary' : 'default'"
-                          v-if="isElectron&&(MoreButtonDict.find(b => b.name === 'desktopVisionButton')?.enabled||isCapsuleMode)"
+                          v-if="isElectron&&(MoreButtonDict.find(b => b.name === 'desktopVisionButton')?.enabled)"
                           circle>
                           <i class="fa-solid fa-eye"></i>
                         </el-button>
@@ -1474,7 +1398,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="toggleScreenshot(true)"
                           class="icon-btn vision-btn"
                           type="default"
-                          v-if="isElectron&&(MoreButtonDict.find(b => b.name === 'screenshotButton')?.enabled||isCapsuleMode)"
+                          v-if="isElectron&&(MoreButtonDict.find(b => b.name === 'screenshotButton')?.enabled)"
                           circle>
                           <i class="fa-solid fa-scissors"></i>
                         </el-button>
@@ -1485,7 +1409,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="text2imgSettings.enabled = !text2imgSettings.enabled; autoSaveSettings()"
                           class="icon-btn text2img-btn"
                           :type="text2imgSettings.enabled ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'text2imgButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'text2imgButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-pencil"></i>
                         </el-button>
@@ -1496,7 +1420,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="toggleASR"
                           class="icon-btn asr-btn"
                           :type="asrSettings.enabled ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'asrButton')?.enabled||isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'asrButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-microphone"></i>
                         </el-button>
@@ -1507,7 +1431,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="ttsSettings.enabled=!ttsSettings.enabled;changeTTSstatus();"
                           class="icon-btn asr-btn"
                           :type="ttsSettings.enabled ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'ttsButton')?.enabled||isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'ttsButton')?.enabled"
                           circle>
                           <i v-if="ttsSettings.enabled" class="fa-solid fa-volume-high"></i>
                           <i v-else class="fa-solid fa-volume-xmark"></i>
@@ -1519,7 +1443,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="showKnowledgeDialog = true"
                           class="icon-btn knowledge-base-btn"
                           :type="hasEnabledKnowledgeBases ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'knowledgeBaseButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'knowledgeBaseButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-book"></i>
                         </el-button>
@@ -1530,7 +1454,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="webSearchSettings.enabled = !webSearchSettings.enabled; handleWebSearchToggle(webSearchSettings.enabled)"
                           class="icon-btn web-search-btn"
                           :type="webSearchSettings.enabled ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'webSearchButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'webSearchButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-globe"></i>
                         </el-button>
@@ -1541,7 +1465,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="showMemoryDialog = true"
                           class="icon-btn web-search-btn"
                           :type="memorySettings.is_memory ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'memoryButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'memoryButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-brain"></i>
                         </el-button>
@@ -1552,7 +1476,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="toolsSettings.a2ui.enabled = !toolsSettings.a2ui.enabled; autoSaveSettings()"
                           class="icon-btn ui-btn"
                           :type="toolsSettings.a2ui.enabled ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'uiButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'uiButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-icons"></i>
                         </el-button>
@@ -1563,7 +1487,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="codeSettings.enabled = !codeSettings.enabled; handleInterpreterToggle(codeSettings.enabled)"
                           class="icon-btn web-search-btn"
                           :type="codeSettings.enabled ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'codeButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'codeButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-code"></i>
                         </el-button>
@@ -1574,7 +1498,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="CLISettings.enabled = !CLISettings.enabled; handleEnableToggle(CLISettings.enabled)"
                           class="icon-btn web-search-btn"
                           :type="CLISettings.enabled ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'CLIButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'CLIButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-computer"></i>
                         </el-button>
@@ -1586,7 +1510,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="visionControlSettings.enabled = !visionControlSettings.enabled; handleVisionControlEnableToggle(visionControlSettings.enabled)"
                           class="icon-btn web-search-btn"
                           :type="visionControlSettings.enabled ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'visionControl')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'visionControl')?.enabled"
                           circle>
                           <i class="fa-solid fa-arrow-pointer"></i>
                         </el-button>
@@ -1597,7 +1521,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="showStickerPacksDialog = true"
                           class="icon-btn sticker-btn"
                           :type="hasEnabledStickerPacks ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'stickerButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'stickerButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-face-smile"></i>
                         </el-button>
@@ -1608,7 +1532,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="HASettings.enabled = !HASettings.enabled; changeHAEnabled();"
                           class="icon-btn homeAssistant-btn"
                           :type="HASettings.enabled ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'haButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'haButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-house"></i>
                         </el-button>
@@ -1619,7 +1543,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="chromeMCPSettings.enabled = !chromeMCPSettings.enabled; changeChromeMCPEnabled();"
                           class="icon-btn browserControl-btn"
                           :type="chromeMCPSettings.enabled ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'chromeButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'chromeButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-compass"></i>
                         </el-button>
@@ -1630,7 +1554,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="sqlSettings.enabled = !sqlSettings.enabled; changeSqlEnabled();"
                           class="icon-btn sqlControl-btn"
                           :type="sqlSettings.enabled ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'sqlButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'sqlButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-database"></i>
                         </el-button>
@@ -1641,7 +1565,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="showAgentDialog = true"
                           class="icon-btn agent-btn"
                           :type="hasAgentChanges ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'agentButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'agentButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-robot"></i>
                         </el-button>
@@ -1652,7 +1576,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="showLLMToolsDialog = true"
                           class="icon-btn llm-tool-btn"
                           :type="hasEnabledLLMTools ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'llmButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'llmButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-cube"></i>
                         </el-button>
@@ -1663,7 +1587,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="showMCPServerDialog = true"
                           class="icon-btn mcp-btn"
                           :type="hasEnabledMCPServers ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'mcpButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'mcpButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-server"></i>
                         </el-button>
@@ -1674,7 +1598,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="this.showA2AServerDialog = true"
                           class="icon-btn a2a-btn"
                           :type="hasEnabledA2AServers ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'a2aButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'a2aButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-network-wired"></i>
                         </el-button>
@@ -1685,7 +1609,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="this.showHttpToolDialog = true"
                           class="icon-btn http-btn"
                           :type="hasEnabledHttpTools ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'httpButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'httpButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-wifi"></i>
                         </el-button>
@@ -1696,7 +1620,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="this.showComfyUIDialog = true"
                           class="icon-btn comfyui-btn"
                           :type="hasEnabledComfyUI ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'comfyuiButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'comfyuiButton')?.enabled"
                           circle>
                           <i class="fa-solid fa-palette"></i>
                         </el-button>
@@ -1707,7 +1631,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="startVRM"
                           class="icon-btn vrm-btn"
                           :type="'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'vrmButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'vrmButton')?.enabled"
                           circle>
                           <i :class='isVRMStarting? "fa-solid fa-spinner fa-spin" : "fa-solid fa-user-ninja"'></i>
                         </el-button>
@@ -1718,7 +1642,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="startTHA"
                           class="icon-btn tha-btn"
                           :type="'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'thaButton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'thaButton')?.enabled"
                           circle>
                           <i :class='isTHAStarting? "fa-solid fa-spinner fa-spin" : "fa-solid fa-hat-wizard"'></i>
                         </el-button>
@@ -1729,7 +1653,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           @click="behaviorSettings.enabled=!behaviorSettings.enabled; autoSaveSettings();"
                           class="icon-btn behavior-btn"
                           :type="behaviorSettings.enabled ? 'primary' : 'default'"
-                          v-if="MoreButtonDict.find(b => b.name === 'behaviorBotton')?.enabled&&!isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'behaviorBotton')?.enabled"
                           circle>
                           <i class="fa-solid fa-person-running"></i>
                         </el-button>
@@ -1738,7 +1662,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                       <!-- 1. 群聊模式开关 -->
                       <el-tooltip :content="t('groupChatSettings')" placement="top">
                         <el-button 
-                          v-if="MoreButtonDict.find(b => b.name === 'groupChatBotton')?.enabled && !isCapsuleMode"
+                          v-if="MoreButtonDict.find(b => b.name === 'groupChatBotton')?.enabled "
                           @click="showGroupSettingsDialog = true"
                           class="icon-btn group-chat-btn"
                           :type="isGroupMode ? 'primary' : 'default'"
@@ -1748,13 +1672,13 @@ function updateElement(el, rawMarkdown, formatFn) {
                       </el-tooltip>
                       <!--展开收起按钮-->
                       <el-tooltip :content="t('moreButton')" placement="top">
-                        <el-button v-if="!isCapsuleMode" @click="showMoreButtonDialog = true" class="icon-btn collapse-btn" type="default" circle>
+                        <el-button @click="showMoreButtonDialog = true" class="icon-btn collapse-btn" type="default" circle>
                           <i class="fa-solid fa-ellipsis"></i>
                         </el-button>
                       </el-tooltip>
 
                       <!-- 折叠态：仅当"自动折叠输入框"开关打开且当前未聚焦时，把模型 / 视图 pill 收纳到发送按钮左侧 -->
-                      <template v-if="systemSettings.autoCollapseInput && !isChatInputActive && !isCapsuleMode && !isAssistantMode && !isMobile">
+                      <template v-if="systemSettings.autoCollapseInput && !isChatInputActive  && !isAssistantMode && !isMobile">
                         <el-tooltip :content="t('clickToSwitchModel')" placement="top" :show-after="500">
                           <div class="status-pill compact-status-pill" @click.stop="showModelDialog = true">
                             <i class="fa-solid fa-microchip"></i>
@@ -1818,7 +1742,7 @@ function updateElement(el, rawMarkdown, formatFn) {
 
                       <el-tooltip :content="isSending ? t('stopGenerating') : t('sendMessage')" placement="top" class="send-btn-container">
                         <el-button
-                          v-if="!isCapsuleMode"
+                         
                           @click="isSending ? stopGenerate() : sendMessage()"
                           :type="isSending ? 'danger' : 'primary'"
                           class="icon-btn send-btn"
@@ -2077,7 +2001,7 @@ function updateElement(el, rawMarkdown, formatFn) {
               </div>
               <!-- 可拖拽的分割条 -->
               <div
-                v-if="!isCapsuleMode && !isAssistantMode && !isMobile"
+                v-if="!isAssistantMode && !isMobile"
                 class="resizer"
                 ref="resizerRef"
                 :class="{ 

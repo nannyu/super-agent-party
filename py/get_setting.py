@@ -37,6 +37,12 @@ def get_effective_user_data_dir():
     """获取当前生效的数据目录"""
     if IS_DOCKER:
         return '/app/data'
+
+    # 多账户支持：通过环境变量指定数据目录
+    custom_data_dir = os.environ.get('SUPER_AGENT_PARTY_DATA_DIR')
+    if custom_data_dir:
+        os.makedirs(custom_data_dir, exist_ok=True)
+        return custom_data_dir
     
     if os.path.exists(PATH_REDIRECT_FILE):
         try:
