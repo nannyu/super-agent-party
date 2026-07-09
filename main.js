@@ -1190,7 +1190,7 @@ app.whenReady().then(async () => {
     });
     // 等待后端服务准备就绪
     await waitForBackend()
-    
+
     // 后端服务准备就绪后，加载完整内容
     console.log(`Backend server is running at http://${HOST}:${PORT}`)
 
@@ -1250,13 +1250,6 @@ app.whenReady().then(async () => {
         isDefaultPort: PORT === DEFAULT_PORT
       }
     })
-
-    // 骨架屏 fade-out 动画完成通知：仅触发一次，用于触发主进程加载主页面
-    let skeletonFadeoutDone;
-    ipcMain.once('skeleton-fadeout-done', () => {
-      console.log('✅ 骨架屏 fade-out 完成，开始加载主页面');
-      if (skeletonFadeoutDone) skeletonFadeoutDone();
-    });
 
     ipcMain.handle('set-env', async (event, arg) => {
       saveEnvVariable(arg.key, arg.value);
@@ -1484,6 +1477,40 @@ app.whenReady().then(async () => {
       return { success: true };
     });
 
+    // 剪切板 IPC
+    ipcMain.handle('clipboard-read', async () => {
+      try {
+        return clipboard.readText() || '';
+      } catch (e) { return ''; }
+    });
+    ipcMain.handle('clipboard-write', async (event, text) => {
+      try {
+        clipboard.writeText(String(text || ''));
+        return { success: true };
+      } catch (e) { return { success: false, error: e.message }; }
+    });
+    ipcMain.handle('clipboard-read-image', async () => {
+      try {
+        const img = clipboard.readImage();
+        if (img.isEmpty()) return null;
+        return img.toDataURL();
+      } catch (e) { return null; }
+    });
+    ipcMain.handle('clipboard-read-file-paths', async () => {
+      try {
+        let paths = clipboard.readFilePaths() || [];
+        if (!paths.length) {
+          const fileUrl = clipboard.read('public.file-url');
+          if (fileUrl) {
+            const url = require('url');
+            const fp = url.fileURLToPath(fileUrl.trim());
+            if (fp && fs.existsSync(fp)) paths = [fp];
+          }
+        }
+        return paths;
+      } catch (e) { return []; }
+    });
+
     // 文件夹递归复制
     function copyFolderSync(src, dest) {
       if (!fs.existsSync(src)) return;
@@ -1618,8 +1645,8 @@ app.whenReady().then(async () => {
       minimalWindow = new BrowserWindow({
         width: winW,
         height: winH,
-        x: Math.round(screenW - winW - 40),
-        y: Math.round((screenH - winH) / 2),
+        x: Math.round((screenW - winW) / 2),
+        y: Math.round(screenH - winH - 40),
         frame: false,
         transparent: true,
         alwaysOnTop: true,
@@ -2022,13 +2049,6 @@ ipcMain.handle('upload-to-workspace', async (event, { targetDirPath, sourceFileP
       setTimeout(() => autoUpdater.quitAndInstall(), 500);
     });
             
-    // 等待骨架屏 fade-out 动画完成后再加载主页面，避免样式闪烁
-    // 兜底超时：若骨架屏异常未发送通知（如 preload 失败），最长等待 5s 后强制加载
-    await new Promise((resolve) => {
-      skeletonFadeoutDone = resolve;
-      setTimeout(() => resolve(), 5000);
-    });
-
     // 加载主页面
     await mainWindow.loadURL(`http://${HOST}:${PORT}`)
     ipcMain.on('set-language', (_, lang) => {

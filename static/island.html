@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>灵动岛</title>
+  <title>Dynamic Island</title>
   <link rel="stylesheet" href="fontawesome/css/all.min.css">
   <link rel="stylesheet" href="css/island.css">
   <style>
@@ -21,7 +21,7 @@
   <div id="island-container">
     <div id="island"
          ref="island"
-         :class="{ quick: isQuickView || showMusicQuick, large: isLargeView }"
+         :class="{ quick: isQuickView || showMusicQuick || alertActive, large: isLargeView, 'has-alert': alertActive, 'show-reminder': showReminderInQuick, 'has-pomodoro': showPomodoroInQuick }"
          @mouseenter="onIslandEnter"
          @mouseleave="onIslandLeave"
          @click="onIslandClick"
@@ -30,26 +30,73 @@
          @pointerup="onPointerUp"
          @wheel.passive="onWheel">
 
+      <!-- 提醒态（所有视图可见） -->
+      <div class="alert-content" v-if="alertActive" @click.stop="alertActionHandler ? null : dismissAlert()">
+        <i :class="'fa-solid ' + alertIcon"></i>
+        <span class="alert-text">{{ alertText }}</span>
+        <button class="alert-action-btn" v-if="alertActionLabel" @click.stop="alertActionHandler && alertActionHandler()">
+          {{ alertActionLabel }}
+        </button>
+        <i class="fa-solid fa-xmark alert-close" v-if="alertDismissible" @click.stop="dismissAlert"></i>
+      </div>
+
       <!-- Still / Quick 视图 -->
       <template v-if="!isLargeView">
 
+
+        <!-- 持久任务提醒（日历触发） -->
+        <div class="reminder-content" v-if="showReminderInQuick && !alertActive">
+          <div class="reminder-top">
+            <i class="fa-solid fa-clock reminder-icon"></i>
+            <span class="reminder-text">{{ activeReminderTask.text }}</span>
+            <button class="reminder-done-btn" @click.stop="completeReminderTask">
+              <i class="fa-solid fa-check"></i>
+            </button>
+          </div>
+          <div class="reminder-hint">{{ t('reminderHint') }}</div>
+        </div>
+
+        <!-- 番茄钟运行显示（still/quick） -->
+        <div class="pomo-quick" v-if="showPomodoroInQuick && !alertActive && !showReminderInQuick">
+          <svg class="pomo-quick-ring" viewBox="0 0 32 32" width="32" height="32">
+            <circle cx="16" cy="16" r="13" fill="none"
+                    stroke="rgba(255,255,255,0.1)" stroke-width="2.5"/>
+            <circle cx="16" cy="16" r="13" fill="none"
+                    :stroke="pomodoro.phase === 'focus' ? '#ff6b6b' : '#6fff7b'"
+                    stroke-width="2.5" stroke-linecap="round"
+                    :stroke-dasharray="2 * Math.PI * 13"
+                    :stroke-dashoffset="2 * Math.PI * 13 * (1 - pomodoroProgress)"
+                    transform="rotate(-90 16 16)"/>
+          </svg>
+          <span class="pomo-quick-time">{{ pomodoroDisplayTime }}</span>
+          <button class="pomo-quick-stop" @click.stop="pomodoroStop">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+
         <!-- Still 模式 + 无音乐：纯时间 -->
-        <div class="still-content" v-if="mode === 'still' && !showMusicQuick">
+        <div class="still-content" v-if="mode === 'still' && !showMusicQuick && !alertActive && !showReminderInQuick && !showPomodoroInQuick">
           <span class="still-time">{{ currentTime || '--:--' }}</span>
         </div>
 
         <!-- Quick 模式 + 无音乐：天气 + 时间/日期（占满） -->
-        <div class="quick-content" v-if="isQuickView && !showMusicQuick">
+        <div class="quick-content" v-if="isQuickView && !showMusicQuick && !alertActive && !showReminderInQuick && !showPomodoroInQuick">
           <div class="quick-weather" v-if="weatherTemp !== null">
             <i :class="'fa-solid ' + weatherIcon"></i>
             <span>{{ weatherTemp }}°</span>
           </div>
           <span class="quick-time" style="border:none;padding:0 10px">{{ currentTime }}</span>
           <span class="quick-date">{{ currentDate }}</span>
+          <button class="quick-minimal-btn" @click.stop="toggleMinimalMode" :title="isMinimalMode ? t('minimalModeClose') : t('minimalMode')">
+            <i class="fa-solid fa-feather"></i>
+          </button>
+          <button class="quick-theme-btn" @click.stop="toggleTheme" :title="themeMode === 'dark' ? '切换浅色' : '切换深色'">
+            <i :class="themeMode === 'dark' ? 'fa-solid fa-sun' : 'fa-solid fa-moon'"></i>
+          </button>
         </div>
 
         <!-- 音乐播放中：歌名跑马灯（占满整个矩形） -->
-        <div class="quick-content music-full" v-if="showMusicQuick && hasMusic">
+        <div class="quick-content music-full" v-if="showMusicQuick && hasMusic && !alertActive">
           <div class="artwork-wrap">
             <i class="fa-solid fa-music"></i>
           </div>
@@ -65,7 +112,7 @@
       <template v-if="isLargeView">
         <div class="panels-wrapper" ref="panelsWrapper">
           <!-- 面板1: 天气/时间 -->
-          <div class="panel weather-panel" :style="{ transform: panelTransforms.p0 }">
+          <div class="panel weather-panel" :style="panelStyles.p0">
             <div class="weather-icon-large" v-if="weatherTemp !== null">
               <i :class="'fa-solid ' + weatherIcon"></i>
             </div>
@@ -81,22 +128,26 @@
           </div>
 
           <!-- 面板2: 音乐 -->
-          <div class="panel music-panel" :style="{ transform: panelTransforms.p1 }">
-            <div class="large-artwork">
+          <div class="panel music-panel" :style="panelStyles.p1">
+            <div class="large-artwork"
+                 @mouseenter="albumHovered = true"
+                 @mousemove="onAlbumMouseMove"
+                 @mouseleave="onAlbumMouseLeave"
+                 :style="albumStyle">
               <i class="fa-solid fa-music"></i>
             </div>
             <div class="large-info">
-              <div class="large-title">{{ currentTrack || '未在播放' }}</div>
+              <div class="large-title">{{ currentTrack || t('musicNotPlaying') }}</div>
               <div class="large-artist">{{ currentArtist }}</div>
             </div>
             <div class="large-controls">
-              <button class="ctrl-btn-lg" @click.stop="sendMusicControl('prev')">
+              <button class="ctrl-btn-lg" @click.stop="skipTrack(-1)">
                 <i class="fa-solid fa-backward-step"></i>
               </button>
               <button class="ctrl-btn-lg play-btn-lg" @click.stop="togglePlay">
                 <i :class="'fa-solid ' + playIcon"></i>
               </button>
-              <button class="ctrl-btn-lg" @click.stop="sendMusicControl('next')">
+              <button class="ctrl-btn-lg" @click.stop="skipTrack(1)">
                 <i class="fa-solid fa-forward-step"></i>
               </button>
             </div>
@@ -109,14 +160,418 @@
               <i class="fa-solid fa-volume-high vol-icon-lg"></i>
             </div>
           </div>
+
+          <!-- 面板3: 任务 -->
+          <div class="panel tasks-panel" :style="panelStyles.p2">
+            <div class="tasks-header">
+              <i class="fa-solid fa-list-check tasks-icon"></i>
+              <span class="tasks-title">{{ t('tasksHeader') }}</span>
+              <span class="tasks-count" v-if="tasks.length">{{ pendingTaskCount }}/{{ tasks.length }}</span>
+              <button class="tasks-history-toggle" v-if="completedCount" @click.stop="showCompleted = !showCompleted" :title="showCompleted ? t('tasksHideCompleted') : t('tasksShowCompleted')">
+                <i :class="showCompleted ? 'fa-solid fa-eye' : 'fa-solid fa-eye-slash'"></i>
+                <span class="history-badge" v-if="!showCompleted">{{ completedCount }}</span>
+              </button>
+            </div>
+            <div class="tasks-add">
+              <input type="text" class="tasks-input" v-model="newTaskText"
+                     :placeholder="t('tasksNewPlaceholder')"
+                     @keydown.enter.stop="addTask"
+                     @click.stop />
+              <button class="tasks-add-btn" @click.stop="addTask" :disabled="!newTaskText.trim()">
+                <i class="fa-solid fa-plus"></i>
+              </button>
+            </div>
+            <div class="tasks-list" ref="tasksList">
+              <div v-if="!tasks.length" class="tasks-empty">
+                <i class="fa-solid fa-clipboard"></i>
+                <span>{{ t('tasksEmpty') }}</span>
+              </div>
+              <div v-for="task in sortedTasks" :key="task.id" class="task-row" :class="{ done: task.done }">
+                <label class="task-check" @click.stop="toggleTask(task.id)">
+                  <i :class="task.done ? 'fa-solid fa-circle-check' : 'fa-regular fa-circle'"></i>
+                </label>
+                <div class="task-body">
+                  <div class="task-text">{{ task.text }}</div>
+                  <div class="task-meta" v-if="task.due_time || task.source">
+                    <span v-if="task.due_time" class="task-due">
+                      <i class="fa-solid fa-clock"></i> {{ formatTaskTime(task.due_time) }}
+                    </span>
+                    <span v-if="task.source === 'ai'" class="task-source ai">AI</span>
+                  </div>
+                </div>
+                <button class="task-done-btn" @click.stop="toggleTask(task.id)" :title="task.done ? t('taskRestore') : t('taskComplete')">
+                  <i :class="task.done ? 'fa-solid fa-rotate-left' : 'fa-solid fa-check'"></i>
+                </button>
+                <button class="task-del" @click.stop="deleteTask(task.id)">
+                  <i class="fa-solid fa-trash"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 面板4: 日历 -->
+          <div class="panel calendar-panel" :style="panelStyles.p3">
+            <div class="cal-week-nav">
+              <button class="cal-nav-btn" @click.stop="prevWeek">
+                <i class="fa-solid fa-chevron-left"></i>
+              </button>
+              <span class="cal-week-range">{{ weekRange }}</span>
+              <button class="cal-nav-btn" @click.stop="nextWeek">
+                <i class="fa-solid fa-chevron-right"></i>
+              </button>
+              <button class="cal-month-btn" @click.stop="toggleMonthPicker">
+                <i class="fa-solid fa-calendar-days"></i>
+              </button>
+            </div>
+            <div class="cal-week-header">
+              <span class="cal-day-label" v-for="d in weekDayLabels">{{ d }}</span>
+            </div>
+            <div class="cal-week-days">
+              <div class="cal-day-cell" v-for="(d, i) in weekDates"
+                   :class="{ today: d.isToday, selected: d.date === calendarSelectedDate }"
+                   @click.stop="selectDate(d.date)">
+                <span class="cal-day-num">{{ d.day }}</span>
+                <span class="cal-day-dots" v-if="d.hasTask || d.hasPomo">
+                  <span class="cal-day-dot" v-if="d.hasTask"></span>
+                  <span class="cal-day-dot pomo" v-if="d.hasPomo"></span>
+                </span>
+              </div>
+            </div>
+            <div class="cal-day-header">
+              <i class="fa-solid fa-calendar-check"></i>
+              <span>{{ selectedDateLabel }}</span>
+            </div>
+            <div class="cal-pomo-stats" v-if="selectedDatePomo">
+              <i class="fa-solid fa-fire"></i>
+              <span>{{ selectedDatePomo.count }} 次专注 · {{ selectedDatePomo.minutes }} 分钟</span>
+            </div>
+            <div class="cal-tasks-list" ref="calTasksList">
+              <div v-if="!dayTasks.length" class="cal-tasks-empty">
+                <i class="fa-regular fa-calendar"></i>
+                <span>{{ t('calendarEmpty') }}</span>
+              </div>
+              <div v-for="task in dayTasks" :key="task.id" class="cal-task-row" :class="{ done: task.done }">
+                <label class="cal-task-check" @click.stop="toggleTask(task.id)">
+                  <i :class="task.done ? 'fa-solid fa-circle-check' : 'fa-regular fa-circle'"></i>
+                </label>
+                <div class="cal-task-body">
+                  <div class="cal-task-text">{{ task.text }}</div>
+                  <div class="cal-task-time" v-if="!task.all_day">
+                    <i class="fa-regular fa-clock"></i> {{ formatTaskTime(task.due_time) }}
+                  </div>
+                  <div class="cal-task-time" v-else>
+                    <i class="fa-regular fa-calendar"></i> {{ t('calendarAllDay') }}
+                  </div>
+                </div>
+                <button class="cal-task-done-btn" @click.stop="toggleTask(task.id)">
+                  <i :class="task.done ? 'fa-solid fa-rotate-left' : 'fa-solid fa-check'"></i>
+                </button>
+                <button class="cal-task-del" @click.stop="deleteTask(task.id)">
+                  <i class="fa-solid fa-trash"></i>
+                </button>
+              </div>
+            </div>
+            <div class="cal-add">
+              <input type="text" class="cal-add-input" v-model="calendarNewTaskText"
+                     :placeholder="t('calendarNewPlaceholder')"
+                     @keydown.enter.stop="addCalendarTask"
+                     @click.stop />
+              <select class="cal-time-sel" v-model="calendarNewTaskHour"
+                      v-if="!calendarNewTaskAllDay" @click.stop>
+                <option v-for="h in 24" :value="String(h - 1).padStart(2, '0')">{{ String(h - 1).padStart(2, '0') }}</option>
+              </select>
+              <span class="cal-time-sep" v-if="!calendarNewTaskAllDay">:</span>
+              <select class="cal-time-sel" v-model="calendarNewTaskMinute"
+                      v-if="!calendarNewTaskAllDay" @click.stop>
+                <option v-for="m in 12" :value="String((m - 1) * 5).padStart(2, '0')">{{ String((m - 1) * 5).padStart(2, '0') }}</option>
+              </select>
+              <button class="cal-add-all-day" :class="{ active: calendarNewTaskAllDay }"
+                      @click.stop="calendarNewTaskAllDay = !calendarNewTaskAllDay"
+                       :title="t('calendarAllDayTitle')">
+                <i class="fa-regular fa-calendar"></i>
+              </button>
+              <button class="cal-add-btn" @click.stop="addCalendarTask" :disabled="!calendarNewTaskText.trim()">
+                <i class="fa-solid fa-plus"></i>
+              </button>
+            </div>
+            <div class="cal-month-picker" v-if="showMonthPicker" @click.stop>
+              <div class="cal-month-picker-nav">
+                <button class="cal-nav-btn" @click.stop="prevMonth"><i class="fa-solid fa-chevron-left"></i></button>
+                <span>{{ monthPickerLabel }}</span>
+                <button class="cal-nav-btn" @click.stop="nextMonth"><i class="fa-solid fa-chevron-right"></i></button>
+                <button class="cal-month-close" @click.stop="showMonthPicker = false">
+                  <i class="fa-solid fa-xmark"></i>
+                </button>
+              </div>
+              <div class="cal-month-grid-header">
+                <span v-for="d in weekDayLabels">{{ d }}</span>
+              </div>
+              <div class="cal-month-grid">
+                <div class="cal-month-cell" v-for="(cell, i) in monthCalendarDays"
+                     :class="{ today: cell.isToday, selected: cell.date === calendarSelectedDate, other: cell.otherMonth }"
+                     @click.stop="jumpToDateFromMonth(cell.date)">
+                  <span class="cal-month-num">{{ cell.day }}</span>
+                  <span class="cal-month-dots" v-if="cell.hasTask || cell.hasPomo">
+                    <span class="cal-month-dot" v-if="cell.hasTask"></span>
+                    <span class="cal-month-dot pomo" v-if="cell.hasPomo"></span>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 面板5: 番茄钟 -->
+          <div class="panel pomodoro-panel" :style="panelStyles.p4">
+            <div class="pomo-card" :class="{ running: pomodoro.running, paused: pomodoro.paused, focus: pomodoro.phase === 'focus' }">
+              <div class="pomo-ring-wrap">
+                <svg class="pomo-ring" viewBox="0 0 104 104">
+                  <circle class="pomo-ring-bg" cx="52" cy="52" r="45" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="5"/>
+                  <circle class="pomo-ring-fg" cx="52" cy="52" r="45" fill="none"
+                          stroke-linecap="round" stroke-width="5"
+                          :stroke="pomodoro.phase === 'focus' ? '#ff6b6b' : '#6fff7b'"
+                          :stroke-dasharray="pomodoroRingDash.circumference"
+                          :stroke-dashoffset="pomodoroRingDash.offset"
+                          transform="rotate(-90 52 52)"/>
+                  <circle v-if="pomodoro.paused" class="pomo-ring-fg" cx="52" cy="52" r="45" fill="none"
+                          stroke-linecap="round" stroke-width="5"
+                          stroke="rgba(255,200,80,0.4)"
+                          :stroke-dasharray="pomodoroRingDash.circumference"
+                          :stroke-dashoffset="pomodoroRingDash.offset"
+                          transform="rotate(-90 52 52)"/>
+                </svg>
+                <div class="pomo-ring-center">
+                  <span class="pomo-time" v-if="pomodoro.running">{{ pomodoroDisplayTime }}</span>
+                  <span class="pomo-time idle-num" v-else>{{ String(pomodoro.focusMinutes).padStart(2, '0') }}:00</span>
+                  <span class="pomo-phase-label">{{ pomodoro.running ? pomodoroPhaseLabel : (pomodoro.phase === 'focus' ? t('pomoReadyFocus') : t('pomoReadyBreak')) }}</span>
+                </div>
+              </div>
+
+              <div class="pomo-mode-select" v-if="!pomodoro.running">
+                <button class="pomo-mode-btn" :class="{ active: pomodoro.phase === 'focus' }"
+                        @click.stop="pomodoro.phase = 'focus'">
+                  <span class="pomo-mode-icon"><i class="fa-solid fa-fire"></i></span>
+                  <span class="pomo-mode-name">{{ t('pomoFocus') }}</span>
+                  <span class="pomo-mode-time">{{ pomodoro.focusMinutes }}{{ t('pomoMin') }}</span>
+                </button>
+                <button class="pomo-mode-btn" :class="{ active: pomodoro.phase === 'break' }"
+                        @click.stop="pomodoro.phase = 'break'">
+                  <span class="pomo-mode-icon"><i class="fa-solid fa-mug-hot"></i></span>
+                  <span class="pomo-mode-name">{{ t('pomoBreak') }}</span>
+                  <span class="pomo-mode-time">{{ pomodoro.breakMinutes }}{{ t('pomoMin') }}</span>
+                </button>
+              </div>
+
+              <div class="pomo-duration-picker" v-if="!pomodoro.running">
+                <input type="range" class="pomo-slider"
+                       :min="pomodoro.phase === 'focus' ? 5 : 1"
+                       :max="pomodoro.phase === 'focus' ? 120 : 30"
+                       :step="pomodoro.phase === 'focus' ? 5 : 1"
+                       :value="pomodoro.phase === 'focus' ? pomodoro.focusMinutes : pomodoro.breakMinutes"
+                       @input="pomodoro.phase === 'focus' ? pomodoro.focusMinutes = parseInt($event.target.value) : pomodoro.breakMinutes = parseInt($event.target.value)" />
+              </div>
+
+              <button class="pomo-action-btn" v-if="!pomodoro.running" @click.stop="pomodoroStart">
+                <i class="fa-solid fa-play"></i> {{ t('pomoStart') }}
+              </button>
+              <div class="pomo-running-actions" v-else>
+                <button class="pomo-action-btn secondary" v-if="!pomodoro.paused" @click.stop="pomodoroPause">
+                  <i class="fa-solid fa-pause"></i> {{ t('pomoPause') }}
+                </button>
+                <button class="pomo-action-btn secondary" v-if="pomodoro.paused" @click.stop="pomodoroPause">
+                  <i class="fa-solid fa-play"></i> {{ t('pomoResume') }}
+                </button>
+                <button class="pomo-action-btn danger" @click.stop="pomodoroReset">
+                  <i class="fa-solid fa-stop"></i> {{ t('pomoStop') }}
+                </button>
+              </div>
+            </div>
+
+            <div class="pomo-stats" v-if="pomodoroTodayCount > 0">
+              <span class="pomo-stat-dots">
+                <span v-for="n in Math.min(pomodoroTodayCount, 6)"><i class="fa-solid fa-circle-check pomo-dot-done"></i></span>
+              </span>
+              <span class="pomo-stat-text">{{ pomodoroTodayCount }}{{ t('pomoToday') }} · {{ pomodoroTodayMinutes }}{{ t('pomoTodayMin') }}</span>
+            </div>
+          </div>
+
+          <!-- 面板6: 任务中心 -->
+          <div class="panel taskcenter-panel" :style="panelStyles.p5">
+            <div class="tc-header">
+              <i class="fa-solid fa-robot tc-icon"></i>
+              <span class="tc-title">{{ t('taskCenter') }}</span>
+              <span class="tc-count" v-if="activeCenterTasks.length">{{ activeCenterTasks.length }}{{ t('taskCenterActive') }}</span>
+            </div>
+            <div class="tc-list" ref="tcList">
+              <div v-if="!centerTasks.length" class="tc-empty">
+                <i class="fa-solid fa-inbox"></i>
+                <span>{{ t('taskCenterEmpty') }}</span>
+              </div>
+              <div v-for="task in activeCenterTasks" :key="task.task_id" class="tc-task-row">
+                <div class="tc-task-info">
+                  <span class="tc-task-badge">{{ statusBadge(task.status) }}</span>
+                  <span class="tc-task-name">{{ task.title }}</span>
+                </div>
+                <div class="tc-progress-bar" v-if="task.status === 'running'">
+                  <div class="tc-progress-fill" :style="{ width: task.progress + '%' }"></div>
+                </div>
+                <div class="tc-task-meta">
+                  <span class="tc-agent-type">{{ task.agent_type || 'default' }}</span>
+                  <span class="tc-progress-text" v-if="task.status === 'running'">{{ task.progress }}%</span>
+                </div>
+              </div>
+              <div v-if="completedCenterTasks.length" class="tc-completed-section">
+                <div class="tc-completed-header">{{ t('taskCenterCompleted') }} ({{ completedCenterTasks.length }})</div>
+                <div v-for="task in completedCenterTasks.slice(0, 5)" :key="task.task_id" class="tc-task-row done">
+                  <div class="tc-task-info">
+                    <span class="tc-task-badge">{{ statusBadge(task.status) }}</span>
+                    <span class="tc-task-name">{{ task.title }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 面板7: 剪切板 -->
+          <div class="panel clipboard-panel" :style="panelStyles.p6">
+            <div class="clip-header">
+              <i class="fa-solid fa-clipboard-list clip-icon"></i>
+              <span class="clip-title">{{ t('clipboardHeader') }}</span>
+              <span class="clip-count">({{ clipboardHistory.length }})</span>
+              <button class="clip-refresh-btn" @click.stop="readCurrentClipboard" :title="t('clipboardRefresh')">
+                <i class="fa-solid fa-rotate"></i>
+              </button>
+              <button class="clip-clear-btn" v-if="clipboardHistory.length" @click.stop="clearClipboardHistory" :title="t('clipboardClear')">
+                <i class="fa-solid fa-trash"></i>
+              </button>
+            </div>
+            <div class="clip-search-bar" v-if="clipboardHistory.length">
+              <i class="fa-solid fa-search clip-search-icon"></i>
+              <input type="text" class="clip-search-input" v-model="clipboardSearch"
+                     :placeholder="t('clipboardSearch')"
+                     @click.stop />
+            </div>
+            <div class="clip-list" ref="clipList">
+               <div v-if="!filteredClipboardHistory.length" class="clip-empty">
+                 <i class="fa-solid fa-copy"></i>
+                 <span>{{ clipboardHistory.length ? t('clipboardNoMatch') : t('clipboardEmpty') }}</span>
+               </div>
+               <div v-for="item in filteredClipboardHistory" :key="item.id" class="clip-row">
+                <div class="clip-type-icon" :class="'type-' + item.type">
+                  <i :class="typeIcon(item.type)"></i>
+                </div>
+                <div class="clip-content" @click.stop="copyToClipboard(item.text)">
+                  <div class="clip-text">{{ item.text.substring(0, 80) }}{{ item.text.length > 80 ? '...' : '' }}</div>
+                  <div class="clip-meta">
+                    <span class="clip-time">{{ formatClipboardTime(item.time) }}</span>
+                    <span class="clip-source" v-if="item.source === 'ai'">AI</span>
+                  </div>
+                </div>
+                <div class="clip-actions">
+                  <button v-if="item.type === 'url'" class="clip-act-btn open" @click.stop="openUrl(item.text)" :title="t('clipboardOpenBrowser')">
+                    <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                  </button>
+                  <button v-else-if="['image','audio','video','file'].includes(item.type) && canOpenPath(item)" class="clip-act-btn open" @click.stop="openUrl(item.text)" :title="t('clipboardOpen')">
+                    <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                  </button>
+                  <button v-if="item.type === 'email'" class="clip-act-btn email" @click.stop="openUrl('mailto:' + item.text)" :title="t('clipboardCompose')">
+                    <i class="fa-solid fa-paper-plane"></i>
+                  </button>
+                  <button class="clip-act-btn copy" @click.stop="copyToClipboard(item.text)" title="复制">
+                    <i class="fa-solid fa-copy"></i>
+                  </button>
+                  <button class="clip-act-btn pin" :class="{ active: isClipboardPinned(item.id) }" @click.stop="togglePinClipboard(item.id)" :title="t('clipboardPin')">
+                    <i class="fa-solid fa-thumbtack"></i>
+                  </button>
+                  <button class="clip-act-btn del" @click.stop="deleteClipboardItem(item.id)" :title="t('clipboardDelete')">
+                    <i class="fa-solid fa-xmark"></i>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 面板8: 翻译 -->
+          <div class="panel translate-panel" :style="panelStyles.p7">
+            <div class="translate-header">
+              <i class="fa-solid fa-language translate-icon"></i>
+              <span class="translate-title">{{ t('translateHeader') }}</span>
+            </div>
+            <textarea class="translate-source"
+                      v-model="sourceText"
+                      :placeholder="t('translateSourcePlaceholder')"
+                      @click.stop></textarea>
+            <div class="translate-bar">
+              <select class="translate-lang-sel" v-model="targetLang" @change="changeTranslateLang" @click.stop>
+                <option value="system">{{ t('translateSystemLang') }}</option>
+                <option value="简体中文">简体中文</option>
+                <option value="繁體中文">繁體中文</option>
+                <option value="English">English</option>
+                <option value="Français">Français</option>
+                <option value="Русский">Русский</option>
+                <option value="Deutsch">Deutsch</option>
+                <option value="Español">Español</option>
+                <option value="Portuguese">Portuguese</option>
+                <option value="日本語">日本語</option>
+                <option value="한국어">한국어</option>
+              </select>
+              <button class="translate-submit-btn" @click.stop="handleTranslate" :disabled="!sourceText.trim() || isTranslating">
+                <i v-if="isTranslating" class="fa-solid fa-spinner fa-spin"></i>
+                <i v-else class="fa-solid fa-arrow-right"></i>
+                {{ isTranslating ? '...' : t('translateBtn') }}
+              </button>
+            </div>
+            <div class="translate-result-wrap" ref="translateResultWrap">
+              <div class="translate-result-text" v-if="translatedText">{{ translatedText }}</div>
+              <div class="translate-result-empty" v-else>
+                <i class="fa-solid fa-language"></i>
+                <span>{{ t('translateResultPlaceholder') }}</span>
+              </div>
+            </div>
+            <div class="translate-result-bar" v-if="translatedText && !isTranslating">
+              <button class="translate-act-btn" @click.stop="copyTranslated" :title="t('translateCopy')">
+                <i class="fa-solid fa-copy"></i> {{ t('translateCopy') }}
+              </button>
+              <button class="translate-act-btn" @click.stop="clearTranslate" :title="t('translateClear')">
+                <i class="fa-solid fa-eraser"></i> {{ t('translateClear') }}
+              </button>
+            </div>
+          </div>
         </div>
 
         <!-- 面板指示器 -->
         <div class="panel-indicator">
-          <div class="panel-dot" :class="{ active: activePanel === 0 }"
-               @click.stop="switchPanel(0)"></div>
-          <div class="panel-dot" :class="{ active: activePanel === 1 }"
-               @click.stop="switchPanel(1)"></div>
+              <button class="panel-nav-btn" :class="{ active: activePanel === 0 }"
+                      @click.stop="switchPanel(0)" :title="t('navWeather')">
+                <i class="fa-solid fa-cloud-sun"></i>
+              </button>
+              <button class="panel-nav-btn" :class="{ active: activePanel === 1 }"
+                      @click.stop="switchPanel(1)" :title="t('navMusic')">
+                <i class="fa-solid fa-music"></i>
+              </button>
+              <button class="panel-nav-btn" :class="{ active: activePanel === 2 }"
+                      @click.stop="switchPanel(2)" :title="t('navTasks')">
+                <i class="fa-solid fa-check"></i>
+              </button>
+              <button class="panel-nav-btn" :class="{ active: activePanel === 3 }"
+                      @click.stop="switchPanel(3)" :title="t('navCalendar')">
+                <i class="fa-solid fa-calendar-days"></i>
+              </button>
+              <button class="panel-nav-btn" :class="{ active: activePanel === 4 }"
+                      @click.stop="switchPanel(4)" :title="t('navPomodoro')">
+                <i class="fa-solid fa-clock"></i>
+              </button>
+              <button class="panel-nav-btn" :class="{ active: activePanel === 5 }"
+                      @click.stop="switchPanel(5)" :title="t('navTaskCenter')">
+                <i class="fa-solid fa-list-check"></i>
+              </button>
+              <button class="panel-nav-btn" :class="{ active: activePanel === 6 }"
+                      @click.stop="switchPanel(6)" :title="t('navClipboard')">
+                <i class="fa-solid fa-clipboard"></i>
+              </button>
+              <button class="panel-nav-btn" :class="{ active: activePanel === 7 }"
+                      @click.stop="switchPanel(7)" :title="t('navTranslate')">
+                <i class="fa-solid fa-language"></i>
+              </button>
         </div>
       </template>
     </div>
@@ -144,6 +599,7 @@
       window.addEventListener('beforeunload', function () {
         vm.stopMusicPoll();
         vm.stopMarquee();
+        vm._stopPomodoroTick();
         vm.unregisterMcpTools();
         if (vm.reconnectTimer) clearTimeout(vm.reconnectTimer);
       });

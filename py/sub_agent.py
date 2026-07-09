@@ -43,6 +43,10 @@ class SubAgentExecutor:
         
         # 标记开始
         await task_center.update_task_progress(task.task_id, 0, status=TaskStatus.RUNNING)
+        await ws_manager.broadcast({
+            "type": "island_task_progress",
+            "data": {"task_id": task.task_id, "title": task.title, "status": "running", "progress": 0, "agent_type": task.agent_type}
+        })
         
         iteration = 0
         conversation_history =[]
@@ -94,6 +98,10 @@ class SubAgentExecutor:
 
         except Exception as e:
             await task_center.update_task_progress(task.task_id, 0, status=TaskStatus.FAILED, error=str(e))
+            await ws_manager.broadcast({
+                "type": "island_task_progress",
+                "data": {"task_id": task.task_id, "title": task.title, "status": "failed", "progress": 0, "agent_type": task.agent_type}
+            })
             return {"success": False, "error": str(e)}
 
     async def _finalize_task_record(self, task_id, task_center, result, history, iteration):
@@ -154,6 +162,18 @@ class SubAgentExecutor:
             result=result, 
             context=new_ctx
         )
+
+        # Broadcast task update to island
+        await ws_manager.broadcast({
+            "type": "island_task_progress",
+            "data": {
+                "task_id": task_id,
+                "title": task.title,
+                "status": final_status.value if hasattr(final_status, 'value') else str(final_status),
+                "progress": final_progress,
+                "agent_type": task.agent_type
+            }
+        })
 
         # 5. 多渠道推送逻辑
         target_platforms = task.platforms if task.platforms else []
@@ -327,6 +347,13 @@ class SubAgentExecutor:
                                 task_id, base_progress, status=None,
                                 context={"history": display_history, "live_content": full_content[-800:] if full_content else ""}
                             )
+                            try:
+                                current = await task_center.get_task(task_id)
+                                await ws_manager.broadcast({
+                                    "type": "island_task_progress",
+                                    "data": {"task_id": task_id, "title": current.title if current else "", "status": "running", "progress": base_progress, "agent_type": current.agent_type if current else ""}
+                                })
+                            except: pass
                             last_update_time = now
                             
                     except: continue

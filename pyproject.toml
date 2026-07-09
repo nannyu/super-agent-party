@@ -93,6 +93,7 @@ dependencies = [
     "pyobjc-framework-ApplicationServices>=10.3 ; sys_platform == 'darwin'",
     "pyobjc-framework-Cocoa>=10.3 ; sys_platform == 'darwin'",
     "python3-pyatspi>=1.19.0 ; sys_platform == 'linux'",
+    "jeepney>=0.8.0 ; sys_platform == 'linux'",
     "pycaw>=20240210 ; sys_platform == 'win32'",
     "winrt-windows-media-control>=3.2.1 ; sys_platform == 'win32'",
     "winrt-windows-foundation>=3.2.1 ; sys_platform == 'win32'",

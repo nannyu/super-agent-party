@@ -8,6 +8,8 @@ import os
 import argparse
 import socket
 import errno
+import subprocess
+import platform
 
 from PIL import Image
 
@@ -5639,6 +5641,14 @@ async def generate_stream_response(client, reasoner_client, request: ChatRequest
                             )
                 logger.info(f"all msg: {request.messages}")
                 yield "data: [DONE]\n\n"
+                if not request.is_sub_agent:
+                    try:
+                        await ws_manager.broadcast({
+                            "type": "island_ai_reply_done",
+                            "data": {"text": "智能体生成完毕！"}
+                        })
+                    except Exception:
+                        pass
                 if settings.get('loveSettings', {}).get('enabled', False) and not request.is_sub_agent:
                     try:
                         from py.affection_system import extract_and_update_affection
@@ -12033,6 +12043,61 @@ async def websocket_endpoint(websocket: WebSocket):
                 await ws_manager.send_json({
                     "type": "island_music_state",
                     "data": state
+                }, websocket)
+
+            elif msg_type == "island_request_clipboard":
+                try:
+                    if platform.system() == 'Darwin':
+                        text = subprocess.check_output(['pbpaste'], text=True)
+                    elif platform.system() == 'Windows':
+                        text = subprocess.check_output(['powershell', '-Command', 'Get-Clipboard'], text=True)
+                    else:
+                        text = subprocess.check_output(['xclip', '-selection', 'clipboard', '-o'], text=True)
+                except:
+                    text = ''
+                await ws_manager.send_json({
+                    "type": "island_clipboard_text",
+                    "data": text.strip() if text else ''
+                }, websocket)
+
+            elif msg_type == "island_write_clipboard":
+                text = data.get("data", {}).get("text", "")
+                try:
+                    p = subprocess.Popen(
+                        ['pbcopy'] if platform.system() == 'Darwin' else (
+                            ['powershell', '-Command', 'Set-Clipboard -Value $input'] if platform.system() == 'Windows' else ['xclip', '-selection', 'clipboard']
+                        ),
+                        stdin=subprocess.PIPE,
+                        text=True
+                    )
+                    p.communicate(input=text)
+                except:
+                    pass
+                await ws_manager.send_json({"type": "island_clipboard_write_result", "data": "ok"}, websocket)
+
+            elif msg_type == "island_request_tasks":
+                current_settings = await load_settings()
+                workspace_dir = current_settings.get("CLISettings", {}).get("cc_path", "")
+                tasks = []
+                if workspace_dir:
+                    from py.task_center import get_task_center
+                    tc = await get_task_center(workspace_dir)
+                    raw = await tc.list_tasks()
+                    for t in raw:
+                        tasks.append({
+                            "task_id": t.task_id,
+                            "title": t.title,
+                            "description": t.description,
+                            "status": t.status.value if hasattr(t.status, 'value') else str(t.status),
+                            "progress": t.progress,
+                            "agent_type": t.agent_type,
+                            "created_at": t.created_at,
+                            "started_at": t.started_at,
+                            "completed_at": t.completed_at
+                        })
+                await ws_manager.send_json({
+                    "type": "island_task_list",
+                    "data": tasks
                 }, websocket)
 
             elif msg_type == "mcp_tool_result":

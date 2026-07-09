@@ -28,13 +28,7 @@ contextBridge.exposeInMainWorld('electron', {
         ipcRenderer.on(channel, (event, ...args) => func(...args));
       }
     },
-    send: (channel, ...args) => {
-      // 仅允许骨架屏通知主进程动画完成
-      const validSendChannels = ['skeleton-fadeout-done'];
-      if (validSendChannels.includes(channel)) {
-        ipcRenderer.send(channel, ...args);
-      }
-    }
+
   },
   // 暴露服务器配置（动态：backend-ready 推送前用默认值，推送后用真实值）
   server: {
@@ -187,6 +181,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('accounts:launch', { accountId }),
   accountsSwitch: (accountId) =>
     ipcRenderer.invoke('accounts:switch', { accountId }),
+  // 剪切板
+  clipboardRead: () => ipcRenderer.invoke('clipboard-read'),
+  clipboardWrite: (text) => ipcRenderer.invoke('clipboard-write', text),
+  clipboardReadImage: () => ipcRenderer.invoke('clipboard-read-image'),
+  clipboardReadFilePaths: () => ipcRenderer.invoke('clipboard-read-file-paths'),
 });
 
 contextBridge.exposeInMainWorld('vmcAPI', {

@@ -1,19 +1,9 @@
 <!DOCTYPE html>
-<html class="loading">
+<html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Super Agent party</title>
-  <!-- FOUC 防护 + 主页面淡入：在外部 CSS 加载前隐藏 body，避免无样式内容闪烁 -->
-  <style>
-    html.loading body { opacity: 0; }
-    html.loading { background: #ffffff; }
-    /* 资源就绪后移除 loading 类时，body 从 opacity 0 平滑淡入到 1 */
-    html body {
-      opacity: 1;
-      transition: opacity 300ms ease-out;
-    }
-  </style>
   <link rel="manifest" href="manifest.json">
   <link rel="stylesheet" href="css/styles.css">
   <link rel="stylesheet" href="css/transition.css">
@@ -18822,17 +18812,5 @@ function updateElement(el, rawMarkdown, formatFn) {
   <script src="js/vue_data.js"></script>
   <script src="js/vue_methods.js"></script>
   <script src="js/renderer.js"></script>
-  <script>
-    // FOUC 防护：CSS 解析完成/首次渲染就绪时，尽早移除 loading 类隐藏
-    // 使用 requestAnimationFrame 确保第一次渲染时机，比 window.load 更早触发
-    function onReady() {
-      document.documentElement.classList.remove('loading');
-    }
-    if (document.readyState === 'complete' || document.readyState === 'interactive') {
-      onReady();
-    } else {
-      document.addEventListener('DOMContentLoaded', onReady);
-    }
-  </script>
 </body>
 </html>

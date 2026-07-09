@@ -178,6 +178,8 @@
       0%, 100% { transform: translateY(0); }
       50% { transform: translateY(-12px); }
     }
+
+    #preload-frame { display: none; }
   </style>
 </head>
 <body>
@@ -202,6 +204,8 @@
       </div>
       <div class="loading-label" id="status-text">Initializing</div>
     </div>
+    
+    <iframe id="preload-frame"></iframe>
   </div>
 
   <script>
@@ -243,50 +247,31 @@
 
     // 3. 监听后端准备就绪信号
     if (ipcRenderer) {
-      ipcRenderer.on('backend-ready', (event, payload) => {
+      ipcRenderer.on('backend-ready', (payload) => {
         const { host, port } = payload;
-        const base = `http://${host}:${port}`;
-
-        // 预热主页面关键 CSS 资源到 HTTP 缓存
-        // 这样主进程 loadURL 时浏览器本地命中缓存，几乎瞬时呈现
-        const warmUrls = [
-          '/css/styles.css',
-          '/css/transition.css',
-          '/libs/element-plus.css',
-          '/fontawesome/css/all.min.css',
-          '/css/github-markdown.min.css',
-          '/css/github.min.css',
-          '/libs/driver.css',
-          '/libs/katex.min.css',
-        ];
-        warmUrls.forEach(url => {
-          // 用 fetch 触发真实 HTTP 请求，把响应写入浏览器 HTTP 缓存
-          // 不需要 await，让它并行预热即可
-          fetch(base + url, { cache: 'force-cache' }).catch(() => {});
-        });
+        const mainPageUrl = `http://${host}:${port}`;
 
         // [关键修复]：清理所有定时器和动画循环
         clearInterval(simulateLoad);
         clearInterval(textInterval);
-        cancelAnimationFrame(animationFrameId); // 停止数字滚动的动画帧
+        cancelAnimationFrame(animationFrameId);
 
         // [关键修复]：强制设定为最终状态
         counterEl.innerText = "100";
         statusText.innerText = "Ready";
         statusText.style.color = "#000";
 
-        // 主进程将在收到 skeleton-fadeout-done 后由主进程的 loadURL 加载主页面
-        // 这里仅负责播放 fade-out 动画并通知主进程动画完成，避免双重导航竞态导致 FOUC
-        // 稍微延迟一下，让用户看清 100% 和 Ready
-        setTimeout(() => {
-          document.getElementById('app').classList.add('fade-out');
+        // 隐藏 iframe 预加载主页面，把所有资源（HTML/JS/CSS/字体）写入 HTTP 缓存
+        // 这样主进程 loadURL 时浏览器本地命中缓存，几乎瞬时呈现
+        const preloadFrame = document.getElementById('preload-frame');
+        preloadFrame.src = mainPageUrl;
+
+        preloadFrame.onload = function() {
+          // 播放 fade-out 动画覆盖 loadURL 过程中的短暂闪烁
           setTimeout(() => {
-            // 通知主进程：骨架屏动画结束，可以加载主页面了
-            if (window.electron && window.electron.ipcRenderer && window.electron.ipcRenderer.send) {
-              window.electron.ipcRenderer.send('skeleton-fadeout-done');
-            }
-          }, 600);
-        }, 400);
+            document.getElementById('app').classList.add('fade-out');
+          }, 400);
+        };
       });
     }
   </script>
