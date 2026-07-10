@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime
 import json
+import re
 from zoneinfo import ZoneInfo  # Python 内置模块
 import aiohttp
 import requests
@@ -44,7 +45,9 @@ time_tool = {
 async def _get_lat_lon(city: str) -> Dict[str, float]:
     """返回 {"latitude": xx, "longitude": yy, "timezone": "Asia/Shanghai"}"""
     url = "https://geocoding-api.open-meteo.com/v1/search"
-    params = {"name": city, "count": 1, "language": "zh"}
+    is_chinese = bool(re.search(r'[\u4e00-\u9fff]', city))
+    lang = "zh" if is_chinese else "en"
+    params = {"name": city, "count": 1, "language": lang}
     async with aiohttp.ClientSession() as session:
         async with session.get(url, params=params) as resp:
             if resp.status != 200:

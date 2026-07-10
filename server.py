@@ -21,10 +21,10 @@ from py.ws_manager import ws_manager
 # === Pre-load heavy tool modules at startup to avoid blocking first request ===
 from py.web_search import (
     DDGsearch, searxng, Tavily_search, Google_search,
-    Brave_search, Exa_search, Serper_search, bochaai_search,
+    Brave_search, Exa_search, Serper_search, bochaai_search, youcom_search,
     jina_crawler, Crawl4Ai_search, firecrawl_search, simple_fetch, markdown_new,
     duckduckgo_tool, searxng_tool, tavily_tool, google_tool,
-    brave_tool, exa_tool, serper_tool, bochaai_tool,
+    brave_tool, exa_tool, serper_tool, bochaai_tool, youcom_tool,
     jina_crawler_tool, simple_fetch_tool, Crawl4Ai_tool, firecrawl_tool, markdown_new_tool,
 )
 from py.know_base import kb_tool, query_knowledge_base, rerank_knowledge_base
@@ -49,7 +49,12 @@ from py.guard import load_safety_words, check_content_safety
 from py.cdp_tool import (
     all_cdp_tools, list_pages, navigate_page, new_page, close_page, select_page,
     take_snapshot, wait_for, click, fill, hover, press_key, evaluate_script,
-    take_screenshot, fill_form, drag, handle_dialog,
+    take_screenshot, fill_form, drag, handle_dialog, click_by_text,
+)
+from py.ext_cdp import (
+    ext_app_tools, ext_click, ext_fill, ext_screenshot, ext_snapshot,
+    ext_evaluate_script, ext_hover, ext_press_key, ext_wait_for,
+    ext_list_apps, ext_select_app, ext_refresh_targets, ext_click_by_text,
 )
 from py.computer_use_tool import (
     computer_use_tools, mouse_use_tools, keyboard_use_tools, desktopVision_use_tools,
@@ -309,6 +314,7 @@ import socket
 import sys
 import tempfile
 import httpx
+import aiohttp
 import ipaddress
 from urllib.parse import urlparse, urlunparse, urljoin
 from urllib.robotparser import RobotFileParser
@@ -1022,6 +1028,13 @@ async def lifespan(app: FastAPI):
     print("System shutting down, cleaning up...")
 
     try:
+        from py.local_app_control import cleanup_all
+        await cleanup_all()
+        print("[LocalAppControl] 所有 CDP 连接已清理")
+    except Exception as e:
+        print(f"[LocalAppControl] 清理 CDP 连接异常: {e}")
+
+    try:
         # 注意：此处需要根据您实际的文件结构导入 process_manager
         # 假设上述 ProcessManager 代码保存在 py/agent_tool.py 中
         from py.cli_tool import process_manager 
@@ -1251,6 +1264,7 @@ async def dispatch_tool(tool_name: str, tool_params: dict, settings: dict,is_sub
         "Exa_search": Exa_search,
         "Serper_search": Serper_search,
         "bochaai_search": bochaai_search,
+        "youcom_search": youcom_search,
         "comfyui_tool_call": comfyui_tool_call,
         "time": time,
         "get_weather": get_weather,
@@ -1278,6 +1292,19 @@ async def dispatch_tool(tool_name: str, tool_params: dict, settings: dict,is_sub
         "fill_form":fill_form,
         "drag": drag,
         "handle_dialog": handle_dialog,
+        "click_by_text": click_by_text,
+        "ext_list_apps": ext_list_apps,
+        "ext_select_app": ext_select_app,
+        "ext_refresh_targets": ext_refresh_targets,
+        "ext_click": ext_click,
+        "ext_fill": ext_fill,
+        "ext_screenshot": ext_screenshot,
+        "ext_snapshot": ext_snapshot,
+        "ext_evaluate_script": ext_evaluate_script,
+        "ext_hover": ext_hover,
+        "ext_press_key": ext_press_key,
+        "ext_wait_for": ext_wait_for,
+        "ext_click_by_text": ext_click_by_text,
         
         # Docker Sandbox 相关工具（原有）
         "docker_sandbox": docker_sandbox,
@@ -3033,6 +3060,31 @@ Assistant: 表格如下：
         if request.messages and request.messages[-1]['role'] == 'user':
             request.messages[-1]['content'] += time_message
 
+    if settings.get('localAppControlSettings', {}).get('enabled'):
+        from py.local_app_control import get_all_connection_info
+        apps = get_all_connection_info()
+        if apps:
+            lines = ["\n\n【本地应用控制】以下应用已连接，必须先用 ext_select_app 选中才能操作："]
+            for a in apps:
+                pp = a.get("port", "?")
+                an = a.get("appName", "?")
+                ts = a.get("targets", [])
+                lines.append(f"- {an} (端口={pp}, targets={len(ts)}个)")
+                for t in ts:
+                    ttype = t.get("type", "?")
+                    tid = t.get("id", "?")
+                    ttl = t.get("title", "")
+                    if ttype in ("page", "webview"):
+                        lines.append(f"    • [{ttype}] {ttl}  (target_id={tid})")
+            lines.append("\n操作流程: 1) ext_select_app(port=端口, target_id='xxx') 选择应用和 target")
+            lines.append("         2) ext_snapshot 获取可交互元素列表")
+            lines.append("         3) ext_click(uid='ai-xx') 或 ext_click_by_text(text='关键词') 点击")
+            lines.append("         4) ext_select_app(port=0) 切回内置浏览器")
+            content_append(request.messages, 'system', "\n".join(lines))
+        else:
+            content_append(request.messages, 'system',
+                "\n\n【本地应用控制已启用】当前没有已连接的应用。先在 GUI 中扫描并连接应用。")
+
     print(f"系统提示：{request.messages[0]['content']}")
     return request
 
@@ -3667,6 +3719,10 @@ async def generate_stream_response(client, reasoner_client, request: ChatRequest
                 tools.extend(chromeMCP_tool)
         if settings['chromeMCPSettings']['enabled'] and settings['chromeMCPSettings']['type']=='internal':
             tools.extend(all_cdp_tools)
+        lac = settings.get('localAppControlSettings', {})
+        if lac.get('enabled'):
+            if 'chromeMCPSettings' not in settings or not settings['chromeMCPSettings']['enabled'] or settings['chromeMCPSettings']['type'] != 'internal':
+                tools.extend(ext_app_tools)
         if settings['sqlSettings']['enabled']:
             sql_tool = await sql_client.get_openai_functions(disable_tools=[])
             if sql_tool:
@@ -4161,6 +4217,8 @@ async def generate_stream_response(client, reasoner_client, request: ChatRequest
                             results = await Serper_search(user_prompt)
                         elif settings['webSearch']['engine'] == 'bochaai':
                             results = await bochaai_search(user_prompt)
+                        elif settings['webSearch']['engine'] == 'youcom':
+                            results = await youcom_search(user_prompt)
                         if results:
                             content_append(request.messages, 'user',  f"\n\n联网搜索结果：{results}\n\n")
                             tool_chunk = {
@@ -4184,10 +4242,12 @@ async def generate_stream_response(client, reasoner_client, request: ChatRequest
                             tools.append(brave_tool)
                         elif settings['webSearch']['engine'] == 'exa':
                             tools.append(exa_tool)
-                        elif settings['webSearch']['crawler'] == 'serper':
+                        elif settings['webSearch']['engine'] == 'serper':
                             tools.append(serper_tool)
-                        elif settings['webSearch']['crawler'] == 'bochaai':
+                        elif settings['webSearch']['engine'] == 'bochaai':
                             tools.append(bochaai_tool)
+                        elif settings['webSearch']['engine'] == 'youcom':
+                            tools.append(youcom_tool)
 
                         if settings['webSearch']['crawler'] == 'jina':
                             tools.append(jina_crawler_tool)
@@ -5173,12 +5233,20 @@ async def generate_stream_response(client, reasoner_client, request: ChatRequest
                         browser_vision_enabled = settings['chromeMCPSettings'].get('browserVision', False)
 
                     if browser_vision_enabled and '[Getting browser screenshot]' in all_combined_results:
-                        import re
-                        # 使用正则提取返回值中的 URL (例如: http://127.0.0.1:3456/uploaded_files/xxx.jpg)
+                        import re, base64, os
                         match = re.search(r'\[Getting browser screenshot\]\s*(http[^\s]+)', all_combined_results)
                         if match:
                             browser_img_url = match.group(1)
-                            
+                            if browser_img_url.startswith('http://127.0.0.1:'):
+                                img_path = browser_img_url.split('/uploaded_files/', 1)[-1]
+                                img_path = os.path.join(UPLOAD_FILES_DIR, img_path)
+                                if os.path.exists(img_path):
+                                    with open(img_path, 'rb') as f:
+                                        b64 = base64.b64encode(f.read()).decode('utf-8')
+                                    ext = os.path.splitext(img_path)[1].lower().lstrip('.')
+                                    mime = 'image/' + ('jpeg' if ext in ('jpg','jpeg') else ext)
+                                    browser_img_url = f"data:{mime};base64,{b64}"
+
                             current_browser_msg = {
                                 "role": "user",
                                 "content": [
@@ -5643,9 +5711,10 @@ async def generate_stream_response(client, reasoner_client, request: ChatRequest
                 yield "data: [DONE]\n\n"
                 if not request.is_sub_agent:
                     try:
+                        increment_heatmap()
                         await ws_manager.broadcast({
                             "type": "island_ai_reply_done",
-                            "data": {"text": "智能体生成完毕！"}
+                            "data": {"text": "活干完啦，快来看看吧！"}
                         })
                     except Exception:
                         pass
@@ -5928,6 +5997,9 @@ async def generate_complete_response(client,reasoner_client, request: ChatReques
             tools.extend(chromeMCP_tool)
     if settings['chromeMCPSettings']['enabled'] and settings['chromeMCPSettings']['type']=='internal':
         tools.extend(all_cdp_tools)
+    if settings.get('localAppControlSettings', {}).get('enabled'):
+        if 'chromeMCPSettings' not in settings or not settings['chromeMCPSettings']['enabled'] or settings['chromeMCPSettings']['type'] != 'internal':
+            tools.extend(ext_app_tools)
     if settings['sqlSettings']['enabled']:
         sql_tool = await sql_client.get_openai_functions(disable_tools=[])
         if sql_tool:
@@ -6217,6 +6289,8 @@ async def generate_complete_response(client,reasoner_client, request: ChatReques
                     results = await Serper_search(user_prompt)
                 elif settings['webSearch']['engine'] == 'bochaai':
                     results = await bochaai_search(user_prompt)
+                elif settings['webSearch']['engine'] == 'youcom':
+                    results = await youcom_search(user_prompt)
                 if results:
                     content_append(request.messages, 'user',  f"\n\n联网搜索结果：{results}")
             if settings['webSearch']['when'] == 'after_thinking' or settings['webSearch']['when'] == 'both':
@@ -6232,10 +6306,12 @@ async def generate_complete_response(client,reasoner_client, request: ChatReques
                     tools.append(brave_tool)
                 elif settings['webSearch']['engine'] == 'exa':
                     tools.append(exa_tool)
-                elif settings['webSearch']['crawler'] == 'serper':
+                elif settings['webSearch']['engine'] == 'serper':
                     tools.append(serper_tool)
-                elif settings['webSearch']['crawler'] == 'bochaai':
+                elif settings['webSearch']['engine'] == 'bochaai':
                     tools.append(bochaai_tool)
+                elif settings['webSearch']['engine'] == 'youcom':
+                    tools.append(youcom_tool)
 
                 if settings['webSearch']['crawler'] == 'jina' and not _is_steam_build:
                     tools.append(jina_crawler_tool)
@@ -9885,6 +9961,69 @@ async def stop_ChromeMCP():
             content={"error": str(e)}
         )
 
+# ============================================================
+# 本地应用控制 API 端点
+# ============================================================
+@app.post("/connect-app-cdp")
+async def connect_app_cdp(request: Request):
+    from py.local_app_control import connect_to_external_app
+    data = await request.json()
+    port = data.get("port", 9223)
+    app_id = data.get("appId", "")
+    app_name = data.get("appName", "")
+    result = await connect_to_external_app(port, app_id, app_name)
+    return JSONResponse(result)
+
+@app.post("/disconnect-app-cdp")
+async def disconnect_app_cdp(request: Request):
+    from py.local_app_control import disconnect_from_external_app
+    data = await request.json()
+    port = data.get("port", 0)
+    result = await disconnect_from_external_app(port)
+    return JSONResponse(result)
+
+@app.post("/execute-external-cdp")
+async def execute_external_cdp_endpoint(request: Request):
+    from py.local_app_control import execute_external_cdp
+    data = await request.json()
+    port = data.get("port", 0)
+    method = data.get("method", "")
+    params = data.get("params", {})
+    result = await execute_external_cdp(port, method, params)
+    return JSONResponse(result)
+
+@app.get("/app-cdp-status")
+async def app_cdp_status():
+    from py.local_app_control import get_all_connection_info
+    result = get_all_connection_info()
+    return JSONResponse({"connections": result})
+
+@app.post("/select-external-target")
+async def select_external_target_endpoint(request: Request):
+    from py.local_app_control import select_external_target
+    data = await request.json()
+    port = data.get("port", 0)
+    target_url = data.get("targetUrl", "")
+    result = await select_external_target(port, target_url)
+    return JSONResponse(result)
+
+@app.post("/switch-external-target")
+async def switch_external_target_endpoint(request: Request):
+    from py.local_app_control import switch_external_target
+    data = await request.json()
+    port = data.get("port", 0)
+    target_id = data.get("targetId", "")
+    result = await switch_external_target(port, target_id)
+    return JSONResponse(result)
+
+@app.post("/refresh-external-targets")
+async def refresh_external_targets_endpoint(request: Request):
+    from py.local_app_control import refresh_external_targets as _refresh
+    data = await request.json()
+    port = data.get("port", 0)
+    result = await _refresh(port)
+    return JSONResponse(result)
+
 @app.post("/start_sql")
 async def start_sql(request: Request):
     data = await request.json()
@@ -11619,6 +11758,95 @@ def get_ip():
     ip = get_internal_ip()
     return {"ip": ip}
 
+_ip_city_cache = None
+
+@app.get("/api/ip-city")
+async def get_ip_city():
+    global _ip_city_cache
+    if _ip_city_cache is not None:
+        return _ip_city_cache
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get("http://ip-api.com/json/", timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("status") == "success":
+                        _ip_city_cache = {
+                            "city": data.get("city", ""),
+                            "regionName": data.get("regionName", ""),
+                            "country": data.get("country", ""),
+                            "lat": data.get("lat"),
+                            "lon": data.get("lon"),
+                        }
+                        return _ip_city_cache
+    except Exception as e:
+        print(f"[IP City] Failed to fetch: {e}")
+    return {"city": "", "regionName": "", "country": "", "lat": None, "lon": None}
+
+@app.get("/api/weather")
+async def proxy_weather(lat: float, lon: float, daily: str = None, forecast_days: int = None):
+    try:
+        params = {"latitude": lat, "longitude": lon, "current_weather": "true"}
+        if daily:
+            params["daily"] = daily
+        if forecast_days:
+            params["forecast_days"] = str(forecast_days)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://api.open-meteo.com/v1/forecast",
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+    except Exception as e:
+        print(f"[Weather Proxy] Failed: {e}")
+    return {"error": "weather_fetch_failed"}
+
+@app.get("/api/geocode")
+async def proxy_geocode(city: str, lang: str = "zh"):
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": city, "count": 1, "language": lang},
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+    except Exception as e:
+        print(f"[Geocode Proxy] Failed: {e}")
+    return {"error": "geocode_failed"}
+
+HEATMAP_FILE = os.path.join(USER_DATA_DIR, "island_heatmap.json")
+
+def _load_heatmap() -> dict:
+    try:
+        with open(HEATMAP_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _save_heatmap(data: dict):
+    os.makedirs(os.path.dirname(HEATMAP_FILE), exist_ok=True)
+    with open(HEATMAP_FILE, "w") as f:
+        json.dump(data, f)
+
+def increment_heatmap():
+    today = datetime.now().strftime("%Y-%m-%d")
+    data = _load_heatmap()
+    data[today] = data.get(today, 0) + 1
+    _save_heatmap(data)
+
+@app.get("/api/heatmap")
+async def get_heatmap():
+    return _load_heatmap()
+
+@app.post("/api/heatmap/increment")
+async def post_heatmap_increment():
+    increment_heatmap()
+    return {"ok": True}
+
 
 async def sync_all_bots_behavior(settings_dict: dict):
     """
@@ -11777,9 +12005,22 @@ async def websocket_endpoint(websocket: WebSocket):
             covs = await load_covs()
             current_settings["conversations"] = covs.get("conversations", [])
             current_settings["conversationGroups"] = covs.get("conversationGroups", [])
-        
+
+        if 'localAppControlSettings' in current_settings:
+            from py.local_app_control import get_connected_ports
+            live_ports = get_connected_ports()
+            stored = current_settings['localAppControlSettings'].get('connectedApps', {})
+            if stored:
+                cleaned = {}
+                for app_id, conn in stored.items():
+                    if conn.get('port') in live_ports:
+                        cleaned[app_id] = conn
+                if len(cleaned) != len(stored):
+                    current_settings['localAppControlSettings']['connectedApps'] = cleaned
+                    await save_settings(current_settings)
+
         await ws_manager.send_json({"type": "settings", "data": current_settings}, websocket)
-        
+
         # 3. 消息处理循环
         while True:
             try:
@@ -11808,6 +12049,8 @@ async def websocket_endpoint(websocket: WebSocket):
                             break
                 from py.get_setting import deep_update
                 deep_update(cur_settings, settings_dict)
+                if 'localAppControlSettings' in settings_dict:
+                    cur_settings['localAppControlSettings'] = settings_dict['localAppControlSettings']
                 await save_settings(cur_settings)
                 await sync_all_bots_behavior(cur_settings)
                 try:
@@ -11894,8 +12137,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     "enabled": False,
                 }
                 await save_settings(current_settings)
-                await ws_manager.send_json({"type": "settings", "data": current_settings}, websocket)
-            
+
             elif msg_type == "set_user_input":
                 user_input = data.get("data", {}).get("text", "")
                 await ws_manager.broadcast({

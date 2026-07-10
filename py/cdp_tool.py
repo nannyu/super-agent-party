@@ -125,6 +125,17 @@ async def call_vue_method(method_name, args_list=None):
     for attempt in range(max_retries):
         # 每次重试都重新连接 WebSocket，防止 WS 链接本身断开
         try:
+            # 前置检查：确保 window.aiBrowser 已初始化
+            if attempt == 0:
+                check_res = await cdp_command(ws_url, "Runtime.evaluate", {
+                    "expression": "typeof window.aiBrowser !== 'undefined'",
+                    "returnByValue": True
+                })
+                check_value = check_res.get('result', {}).get('value', False)
+                if not check_value:
+                    print(f"[Warn] window.aiBrowser not ready, retrying {method_name}...")
+                    raise ValueError("aiBrowser not initialized")
+
             res = await cdp_command(ws_url, "Runtime.evaluate", {
                 "expression": expression,
                 "returnByValue": True, 
@@ -138,10 +149,17 @@ async def call_vue_method(method_name, args_list=None):
                 if 'exception' in exc and 'description' in exc['exception']:
                     msg = f"{msg}: {exc['exception']['description']}"
                 
-                # ★ 关键：如果遇到 Illegal invocation，抛出异常以触发重试
-                if "Illegal invocation" in msg or "GUEST_VIEW_MANAGER_CALL" in msg:
-                    print(f"[Warn] Retrying {method_name} due to Electron error: {msg}")
-                    raise ValueError("Electron Webview Error") # 触发 except 重试
+                # 可重试的错误：Illegal invocation、GUEST_VIEW_MANAGER_CALL、aiBrowser 未就绪
+                retryable = any(kw in msg for kw in [
+                    "Illegal invocation",
+                    "GUEST_VIEW_MANAGER_CALL",
+                    "Cannot read properties of undefined",
+                    "aiBrowser is not defined",
+                    "aiBrowser is undefined"
+                ])
+                if retryable:
+                    print(f"[Warn] Retrying {method_name} due to error: {msg}")
+                    raise ValueError("Retryable Error")
                 
                 return f"Error executing {method_name}: {msg}"
 
@@ -149,10 +167,17 @@ async def call_vue_method(method_name, args_list=None):
             remote_object = res.get('result', {})
             value = remote_object.get('value', "")
             
-            # 如果返回值是字符串且包含 Electron 内部错误，也视为失败进行重试
-            if isinstance(value, str) and ("Illegal invocation" in value or "GUEST_VIEW_MANAGER_CALL" in value):
+            # 如果返回值是字符串且包含可重试错误，也视为失败进行重试
+            retryable = any(kw in str(value) for kw in [
+                "Illegal invocation",
+                "GUEST_VIEW_MANAGER_CALL",
+                "Cannot read properties of undefined",
+                "aiBrowser is not defined",
+                "aiBrowser is undefined"
+            ])
+            if isinstance(value, str) and retryable:
                 print(f"[Warn] Retrying {method_name} due to JS Result error: {value}")
-                raise ValueError("Electron Webview Error")
+                raise ValueError("Retryable Error")
 
             if 'value' in remote_object:
                 return remote_object['value']
@@ -553,8 +578,53 @@ all_cdp_tools = [
                     "action": {"type": "string", "enum": ["accept", "dismiss"], "description": "Whether to accept or dismiss the dialog."},
                     "promptText": {"type": "string", "description": "Text to enter if the dialog is a prompt."}
                 },
-                "required": ["action"]
+        "required": ["action"]
             }
         }
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "click_by_text",
+            "description": "Search for an interactive element by keyword (matches aria-label, innerText, title) and click it. Much more reliable than coordinate-based or UID-based clicks for React/Vue apps where buttons may not be standard <button> tags.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Keyword to search (e.g. '播放', 'Play', 'Search', 'Submit')"}
+                },
+                "required": ["text"]
+            }
+        }
+    },
 ]
+
+async def click_by_text(text):
+    script = f"""
+    function() {{
+        const q = {json.dumps(text)};
+        const sel = 'a, button, [role="button"], [role="tab"], [role="menuitem"], li, div, span, [aria-label]';
+        const els = document.querySelectorAll(sel);
+        let best = null, bestScore = 0;
+        for (const el of els) {{
+            if (el.offsetWidth === 0) continue;
+            let score = 0;
+            const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+            const tit = (el.getAttribute('title') || '').toLowerCase();
+            const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
+            if (aria === q) score = 100;
+            else if (aria.includes(q)) score = 80;
+            else if (txt === q) score = 60;
+            else if (txt.includes(q)) score = 40;
+            else if (tit === q) score = 30;
+            else if (tit.includes(q)) score = 20;
+            if (score > bestScore) {{ best = el; bestScore = score; }}
+        }}
+        if (!best) return JSON.stringify({{error: '未找到"' + q + '"'}});
+        const ariaLabel = best.getAttribute('aria-label') || '';
+        best.scrollIntoView({{behavior:'instant', block:'center'}});
+        best.focus();
+        best.click();
+        return JSON.stringify({{tag: best.tagName, text: (best.innerText||'').slice(0,40), ariaLabel: ariaLabel.slice(0,60), score: bestScore}});
+    }}
+    """
+    return await evaluate_script(script)

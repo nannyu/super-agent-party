@@ -1045,6 +1045,10 @@ const app = Vue.createApp({
         }
       }, 1000); // 延迟 500ms 确保主进程完全 Ready
     });
+
+    if (this.localAppControlSettings?.enabled) {
+      setTimeout(() => this.syncAppConnections(), 2000);
+    }
   },
   beforeUnmount() {
     this.stopEdgeScroll();
@@ -2170,6 +2174,11 @@ greet('Super Agent Party');`;
     },
     hasAttachments() {
       return this.allItems && this.allItems.length > 0;
+    },
+    connectedAppCount() {
+      const settings = this.localAppControlSettings;
+      if (!settings || !settings.connectedApps) return 0;
+      return Object.keys(settings.connectedApps).length;
     },
   },
   methods: {

@@ -147,6 +147,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('island-window-closed');
     ipcRenderer.on('island-window-closed', () => callback());
   },
+  onLanguageChanged: (callback) => {
+    ipcRenderer.removeAllListeners('language-changed');
+    ipcRenderer.on('language-changed', () => callback());
+  },
   getBackendLogs: () => ipcRenderer.invoke('get-backend-logs'),
 
   onRemoteInstall: (callback) => ipcRenderer.on('remote-install-any', (_, payload) => callback(payload)),
@@ -186,6 +190,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clipboardWrite: (text) => ipcRenderer.invoke('clipboard-write', text),
   clipboardReadImage: () => ipcRenderer.invoke('clipboard-read-image'),
   clipboardReadFilePaths: () => ipcRenderer.invoke('clipboard-read-file-paths'),
+
+  // 本地应用控制
+  scanLocalElectronApps: () => ipcRenderer.invoke('scan-local-electron-apps'),
+  launchAppWithDebugging: (opts) => ipcRenderer.invoke('launch-app-with-debugging', opts),
+  quitAppProcess: (opts) => ipcRenderer.invoke('quit-app-process', opts),
 });
 
 contextBridge.exposeInMainWorld('vmcAPI', {

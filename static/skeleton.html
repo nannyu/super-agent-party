@@ -179,7 +179,6 @@
       50% { transform: translateY(-12px); }
     }
 
-    #preload-frame { display: none; }
   </style>
 </head>
 <body>
@@ -204,8 +203,6 @@
       </div>
       <div class="loading-label" id="status-text">Initializing</div>
     </div>
-    
-    <iframe id="preload-frame"></iframe>
   </div>
 
   <script>
@@ -249,7 +246,6 @@
     if (ipcRenderer) {
       ipcRenderer.on('backend-ready', (payload) => {
         const { host, port } = payload;
-        const mainPageUrl = `http://${host}:${port}`;
 
         // [关键修复]：清理所有定时器和动画循环
         clearInterval(simulateLoad);
@@ -261,17 +257,27 @@
         statusText.innerText = "Ready";
         statusText.style.color = "#000";
 
-        // 隐藏 iframe 预加载主页面，把所有资源（HTML/JS/CSS/字体）写入 HTTP 缓存
-        // 这样主进程 loadURL 时浏览器本地命中缓存，几乎瞬时呈现
-        const preloadFrame = document.getElementById('preload-frame');
-        preloadFrame.src = mainPageUrl;
+        // 预取关键 CSS 到 HTTP 缓存，让 loadURL 时 CSS 命中缓存即时加载
+        // 仅 fetch CSS，不加载整页 JS，避免 iframe 重复执行 Vue 等重型库
+        const base = `http://${host}:${port}`;
+        const warmUrls = [
+          '/css/styles.css',
+          '/css/transition.css',
+          '/libs/element-plus.css',
+          '/fontawesome/css/all.min.css',
+          '/css/github-markdown.min.css',
+          '/css/github.min.css',
+          '/libs/driver.css',
+          '/libs/katex.min.css',
+        ];
+        warmUrls.forEach(url => {
+          fetch(base + url, { cache: 'force-cache' }).catch(() => {});
+        });
 
-        preloadFrame.onload = function() {
-          // 播放 fade-out 动画覆盖 loadURL 过程中的短暂闪烁
-          setTimeout(() => {
-            document.getElementById('app').classList.add('fade-out');
-          }, 400);
-        };
+        // 播放 fade-out 动画覆盖 loadURL 过程中的短暂闪烁
+        setTimeout(() => {
+          document.getElementById('app').classList.add('fade-out');
+        }, 400);
       });
     }
   </script>

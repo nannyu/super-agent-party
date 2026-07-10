@@ -131,6 +131,11 @@ const I18N = {
     mcpForecastError: '查询预报时出错: ',
     alertOpenWeb: '打开网页',
     alertCompose: '撰写邮件',
+    navHeatmap: '热力图',
+    heatmapHeader: '智能体活跃度',
+    heatmapEmpty: '暂无活动记录\n聊天、完成任务都会点亮热力图',
+    todayCount: '今日 {0}',
+    agentDone: '活干完啦，快来看看吧！',
   },
   'en-US': {
     weatherLoading: 'Loading...',
@@ -261,6 +266,11 @@ const I18N = {
     mcpForecastError: 'Forecast query error: ',
     alertOpenWeb: 'Open',
     alertCompose: 'Compose',
+    navHeatmap: 'Heatmap',
+    heatmapHeader: 'Agent Activity',
+    heatmapEmpty: 'No activity yet\nChat, task completions, and more will light up the heatmap',
+    todayCount: '{0} today',
+    agentDone: 'Task done! Come check it out!',
   }
 };
 
@@ -271,6 +281,10 @@ const WEATHER_ICONS = {
   61: 'fa-cloud-rain', 63: 'fa-cloud-rain', 65: 'fa-cloud-showers-heavy',
   71: 'fa-snowflake', 73: 'fa-snowflake', 75: 'fa-snowflake',
   95: 'fa-bolt', 96: 'fa-bolt', 99: 'fa-bolt'
+};
+
+const NIGHT_WEATHER_ICONS = {
+  0: 'fa-moon', 1: 'fa-cloud-moon', 2: 'fa-cloud-moon', 3: 'fa-cloud-moon'
 };
 
 function fmtLocalDate(d) {
@@ -287,7 +301,7 @@ function createIslandApp() {
       return {
         islandLang: 'zh-CN',
         mode: 'still',           // still | quick | large
-        activePanel: 0,          // 0=weather, 1=music, 2=tasks, 3=calendar, 4=pomodoro, 5=taskcenter, 6=clipboard, 7=translate
+        activePanel: 0,          // 0=weather, 1=music, 2=tasks, 3=calendar, 4=pomodoro, 5=taskcenter, 6=clipboard, 7=translate, 8=heatmap
         themeMode: 'dark',
         isHovered: false,
         // Music state
@@ -311,6 +325,10 @@ function createIslandApp() {
         weatherCity: '北京',
         weatherLoading: false,
         weatherError: null,
+        editingCity: false,
+        editCityText: '',
+        ipLat: null,
+        ipLon: null,
 
         // Time
         currentTime: '',
@@ -375,6 +393,8 @@ function createIslandApp() {
         translateAbortController: null,
         // Minimal mode state
         isMinimalMode: false,
+        // Heatmap state
+        heatmapData: {},
         swipeStartX: 0,
         swipeStartY: 0,
         swipeMoved: false,
@@ -387,12 +407,19 @@ function createIslandApp() {
     },
 
     computed: {
+      isNightTime() {
+        const h = new Date().getHours();
+        return h >= 18 || h < 6;
+      },
       weatherDesc() {
         if (this.weatherCode === null) return this.t('weatherLoading');
         const wc = I18N[this.islandLang].weatherCodes[this.weatherCode];
         return wc || this.t('weatherUnknown');
       },
       weatherIcon() {
+        if (this.isNightTime && NIGHT_WEATHER_ICONS[this.weatherCode]) {
+          return NIGHT_WEATHER_ICONS[this.weatherCode];
+        }
         return WEATHER_ICONS[this.weatherCode] || 'fa-cloud';
       },
       isQuickView() {
@@ -465,8 +492,52 @@ function createIslandApp() {
             const x = (7 - this.activePanel) * 100 + dragPct;
             const dist = Math.abs(x) / 100;
             return { transform: `translateX(${x}%)`, filter: `blur(${dist * maxBlur}px)`, opacity: 1 - dist * 0.5 };
+          })(),
+          p8: (() => {
+            const x = (8 - this.activePanel) * 100 + dragPct;
+            const dist = Math.abs(x) / 100;
+            return { transform: `translateX(${x}%)`, filter: `blur(${dist * maxBlur}px)`, opacity: 1 - dist * 0.5 };
           })()
         };
+      },
+      heatmapGrid() {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const weeks = 15;
+        const endDate = new Date(today);
+        endDate.setDate(endDate.getDate() + (6 - endDate.getDay()));
+        const startDate = new Date(endDate);
+        startDate.setDate(startDate.getDate() - weeks * 7 + 1);
+        startDate.setDate(startDate.getDate() - startDate.getDay());
+        const grid = [];
+        for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+          const ds = fmtLocalDate(d);
+          const col = Math.floor((d.getTime() - startDate.getTime()) / (7 * 86400000));
+          const row = d.getDay();
+          if (!grid[col]) grid[col] = [];
+          grid[col][row] = { date: ds, count: this.heatmapData[ds] || 0, future: d > today };
+        }
+        const months = [];
+        let lastMonth = -1;
+        const monthNames = this.islandLang === 'en-US'
+          ? ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+          : ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+        for (let col = 0; col < grid.length; col++) {
+          const midDate = new Date(startDate);
+          midDate.setDate(midDate.getDate() + col * 7 + 3);
+          const m = midDate.getMonth();
+          if (m !== lastMonth) {
+            months.push({ col, label: monthNames[m] });
+            lastMonth = m;
+          }
+        }
+        const dayLabels = this.islandLang === 'en-US'
+          ? ['','Mon','','Wed','','Fri','']
+          : ['','一','','三','','五',''];
+        return { grid, months, dayLabels };
+      },
+      heatmapTodayCount() {
+        return this.heatmapData[todayLocalStr()] || 0;
       },
       albumStyle() {
         return {
@@ -651,6 +722,7 @@ function createIslandApp() {
       this.loadTasks();
       try { this.pomodoro.sessions = JSON.parse(localStorage.getItem('island_pomodoro') || '[]'); } catch (e) { this.pomodoro.sessions = []; }
       try { this.clipboardHistory = JSON.parse(localStorage.getItem('island_clipboard') || '[]'); } catch (e) { this.clipboardHistory = []; }
+      this.clipboardHistory = this.clipboardHistory.filter(h => h && typeof h.text === 'string');
       this.clipboardHistory.forEach(h => { if (!h.type) h.type = this.detectContentType(h.text || ''); });
       try { this.clipboardPinned = JSON.parse(localStorage.getItem('island_clipboard_pinned') || '[]'); } catch (e) { this.clipboardPinned = []; }
       this.targetLangActual = navigator.language || navigator.userLanguage || 'zh-CN';
@@ -659,8 +731,8 @@ function createIslandApp() {
       this.activeReminderTask = null;
     },
 
-    mounted() {
-      this.fetchLanguage();
+    async mounted() {
+      await this.fetchLanguage();
       this.connectWS();
       this.updateTime();
       this.timeTimer = setInterval(this.updateTime, 30000);
@@ -673,6 +745,8 @@ function createIslandApp() {
       document.addEventListener('mousedown', this.onDocMouseDown);
 
       // Start weather polling
+      await this.loadHeatmap();
+      await this.tryFetchIpCity();
       this.fetchWeather();
       this.weatherTimer = setInterval(this.fetchWeather, 600000);
 
@@ -694,6 +768,11 @@ function createIslandApp() {
           this.isMinimalMode = false;
         });
       }
+      if (window.electronAPI && window.electronAPI.onLanguageChanged) {
+        window.electronAPI.onLanguageChanged(() => {
+          this.fetchLanguage();
+        });
+      }
     },
 
     beforeUnmount() {
@@ -711,17 +790,22 @@ function createIslandApp() {
     },
 
     methods: {
-      t(key) {
+      t(key, arg) {
         const lang = I18N[this.islandLang] || I18N['zh-CN'];
-        return lang[key] || I18N['zh-CN'][key] || key;
+        const str = lang[key] || I18N['zh-CN'][key] || key;
+        return arg != null ? str.replace('{0}', arg) : str;
       },
       async fetchLanguage() {
         try {
           const res = await fetch('/cur_language');
           const data = await res.json();
           if (I18N[data.language]) this.islandLang = data.language;
-          document.title = this.islandLang === 'zh-CN' ? '灵动岛' : 'Dynamic Island';
-        } catch (e) {}
+        } catch (e) {
+          const navLang = (navigator.language || navigator.userLanguage || '').startsWith('zh') ? 'zh-CN' : 'en-US';
+          this.islandLang = navLang;
+        }
+        document.title = this.islandLang === 'zh-CN' ? '灵动岛' : 'Dynamic Island';
+        this.updateTime();
       },
 
       // ===== Time =====
@@ -786,11 +870,19 @@ function createIslandApp() {
       onDocMouseDown(e) {
         if (this.mode === 'large') {
           const island = this.$refs.island;
-          if (island && !island.contains(e.target)) {
+          if (!island || !island.contains(e.target)) {
             this.mode = 'still';
             this.showMonthPicker = false;
             this.setMouseIgnore(true);
           }
+        }
+      },
+
+      onShieldMouseDown(e) {
+        if (this.mode === 'large') {
+          this.mode = 'still';
+          this.showMonthPicker = false;
+          this.setMouseIgnore(true);
         }
       },
 
@@ -834,7 +926,7 @@ function createIslandApp() {
       // ===== Swipe =====
       onPointerDown(e) {
         if (this.mode !== 'large') return;
-        if (e.target.closest('button') || e.target.closest('input') || e.target.closest('.cal-day-cell') || e.target.closest('.cal-month-cell') || e.target.closest('.cal-add-all-day') || e.target.closest('.pomo-quick')) return;
+        if (e.target.closest('button') || e.target.closest('input') || e.target.closest('textarea') || e.target.closest('select') || e.target.closest('.cal-day-cell') || e.target.closest('.cal-month-cell') || e.target.closest('.cal-add-all-day') || e.target.closest('.pomo-quick')) return;
         this.swipeStartX = e.clientX;
         this.swipeStartY = e.clientY;
         this.swipeMoved = false;
@@ -879,7 +971,7 @@ function createIslandApp() {
           if (Math.abs(dx) >= 40) {
             const dir = dx < 0 ? 1 : -1;
             const newPanel = this.activePanel + dir;
-            if (newPanel >= 0 && newPanel <= 7) {
+            if (newPanel >= 0 && newPanel <= 8) {
               this.activePanel = newPanel;
             }
             this.suppressClick = true;
@@ -893,7 +985,7 @@ function createIslandApp() {
       onWheel(e) {
         if (this.mode !== 'large') return;
         if (this.wheelLock) return;
-        this.wheelAccum += e.deltaX || (e.deltaY > 5 ? e.deltaY : 0);
+        this.wheelAccum += e.deltaX || (Math.abs(e.deltaY) > 5 ? e.deltaY : 0);
         if (Math.abs(this.wheelAccum) >= 60) {
           this.movePanel(this.wheelAccum > 0 ? 1 : -1);
           this.wheelAccum = 0;
@@ -904,12 +996,12 @@ function createIslandApp() {
 
       movePanel(dir) {
         const next = this.activePanel + dir;
-        if (next < 0 || next > 7) return;
+        if (next < 0 || next > 8) return;
         this.activePanel = next;
       },
 
       switchPanel(idx) {
-        if (idx < 0 || idx > 7) return;
+        if (idx < 0 || idx > 8) return;
         this.activePanel = idx;
       },
 
@@ -980,6 +1072,7 @@ function createIslandApp() {
         this._stopPomodoroTick();
         const completed = this.pomodoro.remainingSeconds <= 0;
         if (completed) {
+          this.incrementHeatmap();
           this.pomodoro.sessions.push({
             date: todayLocalStr(),
             focusMin: this.pomodoro.focusMinutes,
@@ -1032,30 +1125,75 @@ function createIslandApp() {
       },
 
       // ===== Weather =====
+      async tryFetchIpCity() {
+        try {
+          const res = await fetch('/api/ip-city');
+          const data = await res.json();
+          if (data.city) {
+            this.weatherCity = data.city;
+            if (data.lat != null && data.lon != null) {
+              this.ipLat = data.lat;
+              this.ipLon = data.lon;
+            }
+            localStorage.setItem('island_weather_city', data.city);
+          }
+        } catch (e) {
+          console.error('[IP City] fetch failed:', e);
+        }
+      },
       async fetchWeather() {
         if (this.weatherLoading) return;
         this.weatherLoading = true;
         this.weatherError = null;
         try {
-          const city = this.weatherCity || '北京';
-          const geoRes = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=zh`);
-          const geoData = await geoRes.json();
-          if (!geoData.results || !geoData.results.length) {
-            this.weatherError = this.t('weatherCityNotFound');
-            this.weatherLoading = false;
-            return;
+          let latitude, longitude;
+          if (this.ipLat != null && this.ipLon != null) {
+            latitude = this.ipLat;
+            longitude = this.ipLon;
+          } else {
+            const city = this.weatherCity || '北京';
+            const isChinese = /[\u4e00-\u9fff]/.test(city);
+            const lang = isChinese ? 'zh' : 'en';
+            const geoRes = await fetch(`/api/geocode?city=${encodeURIComponent(city)}&lang=${lang}`);
+            const geoData = await geoRes.json();
+            if (!geoData.results || !geoData.results.length) {
+              this.weatherError = this.t('weatherCityNotFound');
+              this.weatherLoading = false;
+              return;
+            }
+            latitude = geoData.results[0].latitude;
+            longitude = geoData.results[0].longitude;
           }
-          const { latitude, longitude } = geoData.results[0];
-          const wRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current_weather=true`);
+          const wRes = await fetch(`/api/weather?lat=${latitude}&lon=${longitude}`);
           const wData = await wRes.json();
           if (wData.current_weather) {
             this.weatherTemp = Math.round(wData.current_weather.temperature);
             this.weatherCode = wData.current_weather.weathercode;
           }
         } catch (err) {
+          console.error('[Weather] fetch failed:', err);
           this.weatherError = this.t('weatherFetchError');
         }
         this.weatherLoading = false;
+      },
+      startEditCity() {
+        this.editCityText = this.weatherCity;
+        this.editingCity = true;
+        this.$nextTick(() => {
+          const el = this.$refs.cityInput;
+          if (el) { el.focus(); el.select(); }
+        });
+      },
+      saveEditCity() {
+        const v = (this.editCityText || '').trim();
+        if (v && v !== this.weatherCity) {
+          this.weatherCity = v;
+          this.ipLat = null;
+          this.ipLon = null;
+          localStorage.setItem('island_weather_city', v);
+          this.fetchWeather();
+        }
+        this.editingCity = false;
       },
 
       // ===== WebSocket =====
@@ -1075,7 +1213,7 @@ function createIslandApp() {
             const d = JSON.parse(e.data);
             if (d.type === 'call_mcp_tool') this.handleMcpCall(d.data);
             if (d.type === 'island_music_state') this.handleMusicState(d.data);
-            if (d.type === 'island_ai_reply_done') this.showAlert({ icon: 'fa-comment-dots', text: d.data?.text || 'AI 已回复', dismissible: true, duration: 5000 });
+            if (d.type === 'island_ai_reply_done') { this.loadHeatmap(); this.showAlert({ icon: 'fa-comment-dots', text: d.data?.text || 'AI 已回复', dismissible: true, duration: 5000 }); }
             if (d.type === 'island_notification') this.showAlert({ icon: d.data?.icon || 'fa-bell', text: d.data?.text || '', dismissible: true, duration: 5000 });
             if (d.type === 'island_task_progress') this.handleTaskProgress(d.data);
             if (d.type === 'island_task_list') this.centerTasks = d.data || [];
@@ -1154,7 +1292,8 @@ function createIslandApp() {
       },
       handleTaskNotification(data) {
         this.requestTasks();
-        this.showAlert({ icon: 'fa-circle-check', text: '✅ ' + (data.title || '任务完成'), dismissible: true, duration: 5000 });
+        this.loadHeatmap();
+        this.showAlert({ icon: 'fa-circle-check', text: this.t('agentDone'), dismissible: true, duration: 5000 });
       },
 
       // ===== Clipboard =====
@@ -1268,6 +1407,7 @@ function createIslandApp() {
         this.clipboardPinned = this.clipboardPinned.filter(pid => pid !== id);
         localStorage.setItem('island_clipboard', JSON.stringify(this.clipboardHistory));
         localStorage.setItem('island_clipboard_pinned', JSON.stringify(this.clipboardPinned));
+        if (this.clipboardHistory.length === 0) this.writeClipboardViaWS('');
       },
       clearClipboardHistory() {
         this.clipboardHistory = [];
@@ -1275,6 +1415,7 @@ function createIslandApp() {
         this.clipboardSearch = '';
         localStorage.setItem('island_clipboard', '[]');
         localStorage.setItem('island_clipboard_pinned', '[]');
+        this.writeClipboardViaWS('');
       },
       formatClipboardTime(ts) {
         const diff = Date.now() - ts;
@@ -1408,6 +1549,7 @@ function createIslandApp() {
             if (!ctask) { sendResult(this.t('mcpTaskNotFound') + tp.text); return; }
             ctask.done = !ctask.done;
             this.saveTasks();
+            if (ctask.done) this.incrementHeatmap();
             sendResult((ctask.done ? this.t('mcpTaskDone') : this.t('mcpTaskRestored')) + ': ' + ctask.text);
             return;
           case 'island_task_delete':
@@ -1497,11 +1639,13 @@ function createIslandApp() {
 
       async fetchWeatherDirect(city, forecast) {
         try {
-          const geoRes = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=zh`);
+          const isChinese = /[\u4e00-\u9fff]/.test(city);
+          const lang = isChinese ? 'zh' : 'en';
+          const geoRes = await fetch(`/api/geocode?city=${encodeURIComponent(city)}&lang=${lang}`);
           const geoData = await geoRes.json();
           if (!geoData.results || !geoData.results.length) return `${this.t('mcpTaskNotFound').replace(/: $/, '')} "${city}"`;
           const { latitude, longitude } = geoData.results[0];
-          const wRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current_weather=true`);
+          const wRes = await fetch(`/api/weather?lat=${latitude}&lon=${longitude}`);
           const wData = await wRes.json();
           const cw = wData.current_weather;
           return `${city}实时天气:\n温度: ${cw.temperature}°C\n天气状况: ${I18N[this.islandLang].weatherCodes[cw.weathercode] || this.t('weatherUnknown')}\n风速: ${cw.windspeed} km/h`;
@@ -1512,11 +1656,13 @@ function createIslandApp() {
 
       async fetchForecast(city, days) {
         try {
-          const geoRes = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=zh`);
+          const isChinese = /[\u4e00-\u9fff]/.test(city);
+          const lang = isChinese ? 'zh' : 'en';
+          const geoRes = await fetch(`/api/geocode?city=${encodeURIComponent(city)}&lang=${lang}`);
           const geoData = await geoRes.json();
           if (!geoData.results || !geoData.results.length) return `${this.t('mcpTaskNotFound').replace(/: $/, '')} "${city}"`;
           const { latitude, longitude } = geoData.results[0];
-          const wRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&daily=temperature_2m_max,temperature_2m_min,weathercode&forecast_days=${days}`);
+          const wRes = await fetch(`/api/weather?lat=${latitude}&lon=${longitude}&daily=temperature_2m_max,temperature_2m_min,weathercode&forecast_days=${days}`);
           const wData = await wRes.json();
           const daily = wData.daily;
           let lines = [`${city}${this.t('mcpForecastHeader')}${days}${this.t('mcpForecastSuffix')}`];
@@ -1659,10 +1805,28 @@ function createIslandApp() {
         this.alertActionHandler = null;
         if (this.alertTimer) { clearTimeout(this.alertTimer); this.alertTimer = null; }
       },
+      heatmapColor(count) {
+        const level = count <= 0 ? 0 : Math.min(4, Math.ceil(count / 5));
+        return `var(--heatmap-${level})`;
+      },
+      incrementHeatmap() {
+        const today = todayLocalStr();
+        this.heatmapData[today] = (this.heatmapData[today] || 0) + 1;
+        fetch('/api/heatmap/increment', { method: 'POST' }).catch(() => {});
+      },
+      async loadHeatmap() {
+        try {
+          const res = await fetch('/api/heatmap');
+          const data = await res.json();
+          if (data && typeof data === 'object') this.heatmapData = data;
+        } catch (e) {
+          console.error('[Heatmap] load failed:', e);
+        }
+      },
       completeReminderTask() {
         if (!this.activeReminderTask) return;
         const task = this.tasks.find(t => t.id === this.activeReminderTask.id);
-        if (task) { task.done = true; this.saveTasks(); }
+        if (task) { task.done = true; this.saveTasks(); this.incrementHeatmap(); }
         this.activeReminderTask = null;
         this.setMouseIgnore(true);
       },
@@ -1704,6 +1868,7 @@ function createIslandApp() {
         if (task) {
           task.done = !task.done;
           this.saveTasks();
+          if (task.done) this.incrementHeatmap();
           if (task.done && this.activeReminderTask && this.activeReminderTask.id === id) {
             this.dismissReminderNote();
           }

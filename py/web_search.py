@@ -1018,3 +1018,220 @@ markdown_new_tool = {
         },
     },
 }
+
+# ========== You.com Search ==========
+
+async def youcom_search(query):
+    """
+    You.com 搜索，支持免费层级（MCP，100次/天）和付费层级（REST API，消耗 API Key 额度）。
+    通过 webSearch.youcom_tier 设置切换：'free'（默认）或 'api_key'。
+    """
+    settings = await load_settings()
+    tier = settings['webSearch'].get('youcom_tier', 'free')
+
+    if tier == 'free':
+        return await _youcom_search_free(query)
+    else:
+        return await _youcom_search_api(query)
+
+
+async def _youcom_search_free(query):
+    """
+    免费层级：通过 You.com MCP 端点请求，无需 API Key，每天 100 次额度。
+    端点: https://api.you.com/mcp?profile=free
+    MCP Streamable HTTP 协议：先 initialize 获取 Session ID，再 tools/call 调用 you-search。
+    """
+    settings = await load_settings()
+    max_results = settings['webSearch'].get('youcom_max_results', 10)
+    base_url = "https://api.you.com/mcp?profile=free"
+
+    # 读取用户代理设置
+    proxy_url = settings.get('systemSettings', {}).get('proxy', '')
+    proxies = None
+    if proxy_url:
+        proxies = {"http": proxy_url, "https": proxy_url}
+
+    def sync_mcp():
+        try:
+            # Step 1: Initialize MCP session
+            # 必须同时 Accept application/json 和 text/event-stream（MCP Streamable HTTP 规范）
+            init_resp = requests.post(
+                base_url,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": "super-agent-party", "version": "1.0.0"}
+                    }
+                },
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream"
+                },
+                proxies=proxies,
+                timeout=15
+            )
+            if init_resp.status_code != 200:
+                return f"You.com MCP 初始化失败 (HTTP {init_resp.status_code}): {init_resp.text[:300]}"
+
+            session_id = init_resp.headers.get("Mcp-Session-Id", "")
+
+            # Step 2: Call you-search
+            req_headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            }
+            if session_id:
+                req_headers["Mcp-Session-Id"] = session_id
+
+            search_resp = requests.post(
+                base_url,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "you-search",
+                        "arguments": {
+                            "query": query,
+                            "count": max_results
+                        }
+                    }
+                },
+                headers=req_headers,
+                proxies=proxies,
+                timeout=30
+            )
+
+            if search_resp.status_code == 429:
+                return "You.com 免费层级每日 100 次搜索额度已用完。请在设置中将 youcom_tier 切换为 'api_key' 并配置 API Key 即可继续使用（$5/千次，新账号赠送 $100 额度）。"
+
+            if search_resp.status_code != 200:
+                return f"You.com MCP 搜索失败 (HTTP {search_resp.status_code}): {search_resp.text[:300]}"
+
+            result_data = search_resp.json()
+
+            # 解析 structuredContent（优先）或 content text
+            structured = result_data.get("result", {}).get("structuredContent", {}).get("results", {})
+            if structured:
+                formatted_results = []
+                web_results = structured.get("web", [])
+                for item in web_results:
+                    formatted_results.append({
+                        'title': item.get('title', '无标题'),
+                        'link': item.get('url', ''),
+                        'displayUrl': item.get('url', ''),
+                        'snippet': item.get('description', '') or (item.get('snippets', [''])[0] if item.get('snippets') else '无内容摘要'),
+                        'siteName': item.get('title', '未知来源'),
+                    })
+                return json.dumps(formatted_results, indent=2, ensure_ascii=False)
+
+            # 回退：从 content text 中提取
+            content = result_data.get("result", {}).get("content", [])
+            text_parts = []
+            for item in content:
+                if item.get("type") == "text":
+                    text_parts.append(item.get("text", ""))
+            if text_parts:
+                return "\n\n".join(text_parts)
+
+            return "No results found."
+
+        except Exception as e:
+            return f"You.com MCP 搜索异常: {str(e)}"
+
+    try:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, sync_mcp)
+    except Exception as e:
+        print(f"异步执行错误: {e}")
+        return ""
+
+
+async def _youcom_search_api(query):
+    """
+    付费层级：通过 You.com REST API 请求，需要 API Key。
+    API文档: https://you.com/specs/openapi_search_v1.yaml
+    """
+    settings = await load_settings()
+
+    # 读取用户代理设置
+    proxy_url = settings.get('systemSettings', {}).get('proxy', '')
+    proxies = None
+    if proxy_url:
+        proxies = {"http": proxy_url, "https": proxy_url}
+
+    def sync_search():
+        max_results = settings['webSearch'].get('youcom_max_results', 10)
+        api_key = settings['webSearch'].get('youcom_api_key', "")
+
+        if not api_key:
+            return "You.com API key 未配置，请在设置中填写 YDC_API_KEY"
+
+        url = "https://ydc-index.io/v1/search"
+        headers = {
+            'X-API-Key': api_key,
+            'Content-Type': 'application/json'
+        }
+        payload = json.dumps({
+            "query": query,
+            "count": max_results
+        })
+
+        try:
+            response = requests.post(url, headers=headers, data=payload, proxies=proxies, timeout=30)
+            if response.status_code == 200:
+                result_data = response.json()
+
+                formatted_results = []
+                web_results = result_data.get('results', {}).get('web', [])
+
+                for item in web_results:
+                    formatted_item = {
+                        'title': item.get('title', '无标题'),
+                        'link': item.get('url', ''),
+                        'displayUrl': item.get('url', ''),
+                        'snippet': item.get('description') or (item.get('snippets', [''])[0] if item.get('snippets') else '无内容摘要'),
+                        'siteName': item.get('title', '未知来源'),
+                    }
+                    formatted_results.append(formatted_item)
+
+                return json.dumps(formatted_results, indent=2, ensure_ascii=False)
+            elif response.status_code == 401:
+                return f"You.com API key无效或已过期，状态码：{response.status_code}"
+            elif response.status_code == 403:
+                return f"You.com API key缺少所需权限，状态码：{response.status_code}"
+            else:
+                return f"请求失败，状态码：{response.status_code}，响应内容：{response.text}"
+        except Exception as e:
+            print(f"You.com搜索错误: {str(e)}")
+            return ""
+
+    try:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, sync_search)
+    except Exception as e:
+        print(f"异步执行错误: {e}")
+        return ""
+
+
+youcom_tool = {
+    "type": "function",
+    "function": {
+        "name": "youcom_search",
+        "description": "通过You.com Search API获取网络信息，返回带有摘要和来源的搜索结果。免费层级无需API Key，每天100次；配置API Key后可切换付费层级，无限制。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "需要搜索的关键词或自然语言查询语句。",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}

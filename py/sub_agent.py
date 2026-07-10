@@ -202,6 +202,7 @@ class SubAgentExecutor:
                         }
                     }
                 })
+                await self._increment_heatmap()
                 continue
 
 
@@ -240,6 +241,13 @@ class SubAgentExecutor:
                     asyncio.create_task(handler(chat_id, fake_behavior))
 
         return {"success": True, "task_id": task_id, "result": result}
+
+    async def _increment_heatmap(self):
+        try:
+            from server import increment_heatmap
+            increment_heatmap()
+        except Exception:
+            pass
 
 
     async def _call_llm_stream_only(

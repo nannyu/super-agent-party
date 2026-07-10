@@ -2118,6 +2118,7 @@ formatMessage(content, index) {
           this.ocSettings = data.data.ocSettings || this.ocSettings;
           this.HASettings = data.data.HASettings || this.HASettings;
           this.chromeMCPSettings = data.data.chromeMCPSettings || this.chromeMCPSettings;
+          if (data.data.localAppControlSettings) Object.assign(this.localAppControlSettings, data.data.localAppControlSettings);
           this.sqlSettings = data.data.sqlSettings || this.sqlSettings;
           this.KBSettings = data.data.KBSettings || this.KBSettings;
           this.mcpServers = data.data.mcpServers || this.mcpServers;
@@ -2202,6 +2203,7 @@ formatMessage(content, index) {
           this.ocSettings = data.data.ocSettings || this.ocSettings;
           this.HASettings = data.data.HASettings || this.HASettings;
           this.chromeMCPSettings = data.data.chromeMCPSettings || this.chromeMCPSettings;
+          if (data.data.localAppControlSettings) Object.assign(this.localAppControlSettings, data.data.localAppControlSettings);
           this.sqlSettings = data.data.sqlSettings || this.sqlSettings;
           this.KBSettings = data.data.KBSettings || this.KBSettings;
           this.textFiles = data.data.textFiles || this.textFiles;
@@ -3121,6 +3123,7 @@ formatMessage(content, index) {
                 backend_content: [{ role: 'assistant', content: '' }],
                 toolBlocks: {},
                 displayBlocks: [],
+                segments: null,
                 isOmni: this.settings.enableOmniTTS || this.fastSettings.enableOmniTTS,
                 omniAudioChunks: [], ttsChunks: [], chunks_voice: [], audioChunks: [],
                 isPlaying: false, total_tokens: 0, first_token_latency: 0, elapsedTime: 0,
@@ -3173,7 +3176,7 @@ formatMessage(content, index) {
             }
             
             // 创建新块并推入数组
-            const newBlock = { type, id, name, content: '', args: '', data: null };
+        const newBlock = { type, id, name, content: '', args: '', data: null, segments: null };
             blocks.push(newBlock);
             return newBlock;
         };
@@ -4194,7 +4197,7 @@ formatMessage(content, index) {
                 msg.content += chunk;
 
                 this._typewriterTickCount = (this._typewriterTickCount || 0) + 1;
-                if (this._typewriterTickCount % 8 === 0 || buffer.length === 0) {
+                if (this._typewriterTickCount % 8 === 0 || !this._streamTextBuffer) {
                     block.segments = this.splitMessageContent(block.content);
                     msg.segments = this.splitMessageContent(msg.content);
                 }
@@ -4210,8 +4213,9 @@ formatMessage(content, index) {
     },
 
     flushStreamTextBuffer() {
-        if (this._streamTargetMsg && this._streamTextBuffer) {
-            const block = this.getBlockForMsg(this._streamTargetMsg, 'text');
+        if (!this._streamTargetMsg) return;
+        const block = this.getBlockForMsg(this._streamTargetMsg, 'text');
+        if (this._streamTextBuffer) {
             if (block) {
                 const MAX_TEXT_CONTENT = 150000;
                 if (block.content.length < MAX_TEXT_CONTENT) {
@@ -4219,16 +4223,18 @@ formatMessage(content, index) {
                 } else if (!block.content.endsWith('\n... (Truncated)')) {
                     block.content += '\n... (Truncated)';
                 }
-                block.segments = this.splitMessageContent(block.content);
                 if (this._streamTargetMsg.pure_content.length < MAX_TEXT_CONTENT) {
                     this._streamTargetMsg.pure_content += this._streamTextBuffer;
                 }
                 this._streamTargetMsg.content += this._streamTextBuffer;
-                this._streamTargetMsg.segments = this.splitMessageContent(this._streamTargetMsg.content);
             }
             this._streamTextBuffer = '';
-            this.requestScrollToBottom();
         }
+        if (block) {
+            block.segments = this.splitMessageContent(block.content);
+            this._streamTargetMsg.segments = this.splitMessageContent(this._streamTargetMsg.content);
+        }
+        this.requestScrollToBottom();
     },
 
 
@@ -4346,7 +4352,7 @@ formatMessage(content, index) {
             if (name && !last.name) last.name = name;
             return last;
         }
-        const newBlock = { type, id, name, content: '', args: '', data: null };
+        const newBlock = { type, id, name, content: '', args: '', data: null, segments: null };
         msg.displayBlocks.push(newBlock);
 
         // 🔥 关键：添加新块后立即裁剪，只保留最后 MAX_RENDERED_BLOCKS 个块
@@ -4769,6 +4775,7 @@ formatMessage(content, index) {
           ocSettings: this.ocSettings,
           HASettings: this.HASettings,
           chromeMCPSettings: this.chromeMCPSettings,
+          localAppControlSettings: this.localAppControlSettings,
           sqlSettings: this.sqlSettings,
           KBSettings: this.KBSettings,
           textFiles: cleanFiles(this.textFiles),
@@ -12013,6 +12020,24 @@ copySubtitleOverlayEndpoint(){
   });
 },
 
+copyMinimalEndpoint(){
+  const url = this.partyURL + '/minimal.html';
+  navigator.clipboard.writeText(url).then(() => {
+    if(typeof showNotification === 'function') showNotification(this.t('copySuccess') || 'Copied!', 'success');
+  }).catch(() => {
+    if(typeof showNotification === 'function') showNotification('Copy failed', 'error');
+  });
+},
+
+copyIslandEndpoint(){
+  const url = this.partyURL + '/island.html';
+  navigator.clipboard.writeText(url).then(() => {
+    if(typeof showNotification === 'function') showNotification(this.t('copySuccess') || 'Copied!', 'success');
+  }).catch(() => {
+    if(typeof showNotification === 'function') showNotification('Copy failed', 'error');
+  });
+},
+
 // 处理弹幕队列 - 新版
   async processDanmuQueue() {
     try {
@@ -12420,6 +12445,344 @@ copySubtitleOverlayEndpoint(){
       }
     }
     this.autoSaveSettings();
+  },
+
+  async toggleLocalAppControl() {
+    await this.autoSaveSettings();
+    if (this.localAppControlSettings.enabled) {
+      await this.syncAppConnections();
+    }
+  },
+
+  async syncAppConnections() {
+    try {
+      const response = await fetch('/app-cdp-status');
+      if (response.ok) {
+        const data = await response.json();
+        const livePorts = new Set((data.connections || []).map(c => c.port));
+        let changed = false;
+        for (const appId of Object.keys(this.localAppControlSettings.connectedApps)) {
+          const conn = this.localAppControlSettings.connectedApps[appId];
+          if (!livePorts.has(conn.port)) {
+            delete this.localAppControlSettings.connectedApps[appId];
+            changed = true;
+          }
+        }
+        if (changed) {
+          await this.autoSaveSettings();
+        }
+      }
+    } catch (e) {
+      console.error('同步连接状态失败:', e);
+    }
+  },
+
+  async smartConnectApp(app) {
+    if (!this.isElectron || !window.electronAPI) return;
+    const port = app.cdpPort || this.localAppControlSettings.nextPort;
+
+    // 1. 先试试直接连接（端口可能已经开着）
+    try {
+      const resp = await fetch('/connect-app-cdp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ port: port, appId: app.id, appName: app.name })
+      });
+      if (resp.ok) {
+        const d = await resp.json();
+        if (d.success) {
+          this.localAppControlSettings.connectedApps[app.id] = {
+            appId: app.id, appName: app.name, port: port,
+            targets: d.targets || [], usableCount: d.usableCount || 0,
+            activeWsUrl: d.activeWsUrl || null, status: 'connected'
+          };
+          if (!app.cdpPort) { app.cdpPort = port; this.localAppControlSettings.nextPort = port + 1; }
+          app.isRunning = true;
+          await this.autoSaveSettings();
+          showNotification(this.t('success_connect_app'));
+          return;
+        }
+      }
+    } catch (e) {}
+
+    // 2. 直连失败 → 启动应用
+    showNotification(this.localAppControlSettings.forceNewInstance ? '正在启动新调试实例…' : '正在启动调试连接…', 'info');
+
+    app.cdpPort = port;
+    this.localAppControlSettings.nextPort = port + 1;
+    const launchResult = await window.electronAPI.launchAppWithDebugging({
+      path: app.path,
+      port: port,
+      forceNewInstance: this.localAppControlSettings.forceNewInstance
+    });
+    if (launchResult && launchResult.success) {
+      app.isRunning = true;
+      app.pid = launchResult.pid || app.pid;
+    } else {
+      app.isRunning = true;
+    }
+
+    // 3. 轮询连接，最多 20 秒（浏览器启动慢）
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      try {
+        const resp = await fetch('/connect-app-cdp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ port: port, appId: app.id, appName: app.name })
+        });
+        if (resp.ok) {
+          const d = await resp.json();
+          if (d.success) {
+            this.localAppControlSettings.connectedApps[app.id] = {
+              appId: app.id, appName: app.name, port: port,
+              targets: d.targets || [], usableCount: d.usableCount || 0,
+              activeWsUrl: d.activeWsUrl || null, status: 'connected'
+            };
+            await this.autoSaveSettings();
+            showNotification(this.t('success_connect_app'));
+            return;
+          }
+        }
+      } catch (e) {}
+    }
+    showNotification('应用已启动但未就绪，稍后重试连接', 'warning');
+  },
+
+  async scanLocalApps() {
+    if (!this.isElectron || !window.electronAPI) return;
+    this.localAppControlSettings.scanning = true;
+    try {
+      const apps = await window.electronAPI.scanLocalElectronApps();
+      this.localAppControlSettings.scannedApps = apps || [];
+      showNotification(this.t('success_scan_apps').replace('{count}', this.localAppControlSettings.scannedApps.length));
+    } catch (e) {
+      console.error('扫描本地应用失败:', e);
+      showNotification(this.t('error_launch_app'), 'error');
+    } finally {
+      this.localAppControlSettings.scanning = false;
+    }
+    this.autoSaveSettings();
+  },
+
+  async launchAppWithCDP(app) {
+    if (!this.isElectron || !window.electronAPI) return;
+    try {
+      const port = this.localAppControlSettings.nextPort;
+      const result = await window.electronAPI.launchAppWithDebugging({ path: app.path, port: port });
+      if (result && result.success) {
+        app.isRunning = true;
+        app.cdpPort = port;
+        this.localAppControlSettings.nextPort = port + 1;
+        showNotification(this.t('success_launch_app'));
+      } else {
+        showNotification(this.t('error_launch_app'), 'error');
+      }
+    } catch (e) {
+      console.error('启动应用失败:', e);
+      showNotification(this.t('error_launch_app'), 'error');
+    }
+    this.autoSaveSettings();
+  },
+
+  async connectToApp(app) {
+    if (!app.cdpPort) {
+      app.cdpPort = this.localAppControlSettings.nextPort;
+      this.localAppControlSettings.nextPort = app.cdpPort + 1;
+    }
+    try {
+      const response = await fetch('/connect-app-cdp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ port: app.cdpPort, appId: app.id, appName: app.name })
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (!data.success) {
+          showNotification(this.t('error_connect_app') + ': ' + (data.error || ''), 'error');
+          return;
+        }
+        this.localAppControlSettings.connectedApps[app.id] = {
+          appId: app.id,
+          appName: app.name,
+          port: app.cdpPort,
+          targets: data.targets || [],
+          usableCount: data.usableCount || 0,
+          activeWsUrl: data.activeWsUrl || null,
+          status: 'connected'
+        };
+        app.isRunning = true;
+        await this.autoSaveSettings();
+        showNotification(this.t('success_connect_app'));
+      } else {
+        showNotification(this.t('error_connect_app'), 'error');
+      }
+    } catch (e) {
+      console.error('连接应用失败:', e);
+      showNotification(this.t('error_connect_app'), 'error');
+    }
+  },
+
+  async disconnectFromApp(app) {
+    const conn = this.localAppControlSettings.connectedApps[app.id];
+    const port = conn ? conn.port : app.cdpPort;
+    if (!port) {
+      showNotification(this.t('error_disconnect_app'), 'error');
+      return;
+    }
+    try {
+      const response = await fetch('/disconnect-app-cdp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ port: port, appId: app.id })
+      });
+      if (response.ok) {
+        delete this.localAppControlSettings.connectedApps[app.id];
+        await this.autoSaveSettings();
+        showNotification(this.t('success_disconnect_app'));
+      } else {
+        showNotification(this.t('error_disconnect_app'), 'error');
+      }
+    } catch (e) {
+      console.error('断开应用失败:', e);
+      showNotification(this.t('error_disconnect_app'), 'error');
+    }
+  },
+
+  async quitLocalApp(app) {
+    if (!this.isElectron || !window.electronAPI) return;
+    // If connected, disconnect from CDP backend first
+    if (this.isAppConnected(app)) {
+      try {
+        await fetch('/disconnect-app-cdp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ port: this.localAppControlSettings.connectedApps[app.id]?.port, appId: app.id })
+        });
+      } catch (e) {}
+    }
+    try {
+      const result = await window.electronAPI.quitAppProcess({ pid: app.pid, path: app.path });
+      if (result && result.success) {
+        app.isRunning = false;
+        app.pid = 0;
+        delete this.localAppControlSettings.connectedApps[app.id];
+        showNotification(this.t('success_quit_app'));
+      } else {
+        showNotification(this.t('error_quit_app'), 'error');
+      }
+    } catch (e) {
+      console.error('退出应用失败:', e);
+      showNotification(this.t('error_quit_app'), 'error');
+    }
+    this.autoSaveSettings();
+  },
+
+  isAppConnected(app) {
+    return !!this.localAppControlSettings.connectedApps[app.id];
+  },
+
+  getAppPort(app) {
+    const conn = this.localAppControlSettings.connectedApps[app.id];
+    return conn ? conn.port : (app.cdpPort || '');
+  },
+
+  getAppPages(app) {
+    const conn = this.localAppControlSettings.connectedApps[app.id];
+    if (!conn || !conn.targets) return [];
+    return conn.targets.filter(t => t.webSocketDebuggerUrl && !['worker', 'service_worker', 'shared_worker'].includes(t.type));
+  },
+
+  async selectAppPage(app, page) {
+    if (!page.id) return;
+    const conn = this.localAppControlSettings.connectedApps[app.id];
+    if (!conn) return;
+    try {
+      const response = await fetch('/switch-external-target', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ port: conn.port, targetId: page.id })
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success) {
+          conn.activeWsUrl = page.webSocketDebuggerUrl;
+          showNotification('已切换 target');
+        }
+      }
+    } catch (e) {
+      console.error('切换 target 失败:', e);
+    }
+  },
+
+  async refreshAppTargets(app) {
+    const conn = this.localAppControlSettings.connectedApps[app.id];
+    if (!conn) return;
+    try {
+      const response = await fetch('/refresh-external-targets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ port: conn.port })
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success && data.targets) {
+          conn.targets = data.targets;
+        }
+      }
+    } catch (e) {
+      console.error('刷新 targets 失败:', e);
+    }
+  },
+
+  async screenshotApp(app) {
+    try {
+      const response = await fetch('/execute-external-cdp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ port: this.getAppPort(app), method: 'Page.captureScreenshot', params: {} })
+      });
+      if (response.ok) {
+        showNotification('截图成功');
+      }
+    } catch (e) {
+      console.error('截图失败:', e);
+    }
+  },
+
+  async snapshotApp(app) {
+    try {
+      const response = await fetch('/execute-external-cdp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ port: this.getAppPort(app), method: 'Runtime.evaluate', params: { expression: 'document.body.innerText', returnByValue: true } })
+      });
+      if (response.ok) {
+        showNotification('快照成功');
+      }
+    } catch (e) {
+      console.error('快照失败:', e);
+    }
+  },
+
+  async executeJSInApp(app) {
+    const conn = this.localAppControlSettings.connectedApps[app.id];
+    if (!conn || !conn.wsUrl) {
+      showNotification('请先选择应用页面', 'warning');
+      return;
+    }
+    try {
+      const response = await fetch('/execute-external-cdp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ port: this.getAppPort(app), method: 'Runtime.evaluate', params: { expression: '1 + 1', returnByValue: true } })
+      });
+      if (response.ok) {
+        showNotification('执行成功');
+      }
+    } catch (e) {
+      console.error('执行JS失败:', e);
+    }
   },
 
   async changeSqlEnabled() {

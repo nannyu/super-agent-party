@@ -1,9 +1,18 @@
 <!DOCTYPE html>
-<html>
+<html class="loading">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Super Agent party</title>
+  <!-- FOUC 防护：在外部 CSS 加载前隐藏 body，避免无样式内容闪烁 -->
+  <style>
+    html.loading body { opacity: 0; }
+    html.loading { background: #ffffff; }
+    html body {
+      opacity: 1;
+      transition: opacity 300ms ease-out;
+    }
+  </style>
   <link rel="manifest" href="manifest.json">
   <link rel="stylesheet" href="css/styles.css">
   <link rel="stylesheet" href="css/transition.css">
@@ -9851,6 +9860,102 @@ function updateElement(el, rawMarkdown, formatFn) {
                 </div>
               </div>
               
+              <!-- 本地应用控制界面 -->
+              <div v-show="subMenu === 'localAppControl'" class="page">
+                <div class="toolbar">
+                    <el-alert
+                      :title="t('localAppControlDescription')"
+                      type="info"
+                      :closable="false"
+                      class="mb-2">
+                    </el-alert>
+                </div>
+                <el-form v-if="isElectron" :model="localAppControlSettings" class="settings-form" label-position="top">
+                  <div class="tool-item">
+                    <div class="tool-header">
+                      <div class="header-left">
+                        <span>
+                          <el-icon>
+                            <i class="fa-solid fa-display"></i>
+                          </el-icon>
+                          {{ t('localAppControl') }}
+                        </span>
+                      </div>
+                      <el-switch v-model="localAppControlSettings.enabled" @click.stop @change="toggleLocalAppControl"/>
+                    </div>
+                    <div class="tool-content">
+                      <el-form-item :label="t('appVision')" class="form-item-align" label-position="left">
+                        <el-switch v-model="localAppControlSettings.browserVision" @change="autoSaveSettings"></el-switch>
+                      </el-form-item>
+                      <el-form-item :label="t('forceNewInstance')" class="form-item-align" label-position="left">
+                        <el-switch v-model="localAppControlSettings.forceNewInstance" @change="autoSaveSettings"></el-switch>
+                      </el-form-item>
+                      <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
+                        <el-button type="primary" @click="scanLocalApps" :loading="localAppControlSettings.scanning">
+                          {{ localAppControlSettings.scanning ? t('scanning') : t('scanLocalApps') }}
+                        </el-button>
+                        <span style="font-size:13px;color:var(--el-text-color-secondary);">
+                          {{ t('connectedApps') }}: {{ connectedAppCount }}
+                        </span>
+                      </div>
+
+                      <div v-if="localAppControlSettings.scannedApps.length === 0 && !localAppControlSettings.scanning" style="text-align:center;padding:20px;color:var(--el-text-color-secondary);">
+                        <el-empty :description="t('noLocalAppsFound')" />
+                      </div>
+
+                      <div v-for="(app, index) in localAppControlSettings.scannedApps" :key="app.id" style="margin-bottom:8px;">
+                        <el-card shadow="hover" class="sherpa-card">
+                          <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                            <div style="display:flex;align-items:center;gap:10px;">
+                              <img v-if="app.icon" :src="app.icon" style="width:28px;height:28px;border-radius:6px;" />
+                              <div>
+                                <span style="font-weight:600;">{{ app.name }}</span>
+                                <span v-if="app.version" style="font-size:12px;color:var(--el-text-color-secondary);margin-left:6px;">v{{ app.version }}</span>
+                              </div>
+                            </div>
+                            <div style="display:flex;align-items:center;gap:8px;">
+                              <el-tag v-if="app.isRunning && isAppConnected(app)" type="success" size="small">{{ t('appStatusConnected') }}</el-tag>
+                              <el-tag v-else-if="app.isRunning" type="warning" size="small">{{ t('appStatusRunning') }}</el-tag>
+                              <el-tag v-else type="info" size="small">{{ t('appStatusStopped') }}</el-tag>
+                            </div>
+                          </div>
+                          <div class="d-flex gap-2" style="margin-top:8px;">
+                            <el-button v-if="!isAppConnected(app)" size="small" type="primary" @click="smartConnectApp(app)">
+                              <i class="fa-solid fa-plug"></i> 连接调试
+                            </el-button>
+                            <el-button v-if="isAppConnected(app)" size="small" type="danger" @click="disconnectFromApp(app)">
+                              <i class="fa-solid fa-plug-circle-xmark"></i> {{ t('disconnectApp') }}
+                            </el-button>
+                            <el-button v-if="app.isRunning && !isAppConnected(app)" size="small" type="danger" plain @click="quitLocalApp(app)">
+                              <i class="fa-solid fa-power-off"></i> {{ t('quitApp') }}
+                            </el-button>
+                            <el-button v-if="app.isRunning && isAppConnected(app)" size="small" type="danger" plain @click="quitLocalApp(app)">
+                              <i class="fa-solid fa-power-off"></i> {{ t('quitApp') }}
+                            </el-button>
+                          </div>
+                          <div v-if="isAppConnected(app)" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--el-border-color-light);">
+                            <div style="display:flex;align-items:center;gap:4px;margin-bottom:4px;">
+                              <span style="font-size:12px;font-weight:600;color:var(--el-text-color-secondary);">{{ t('appPages') }}:</span>
+                              <el-tag size="small" type="info">{{ t('cdpPort') }}: {{ getAppPort(app) }}</el-tag>
+                              <el-button size="small" text style="margin-left:auto;" @click="refreshAppTargets(app)"><i class="fa-solid fa-rotate"></i></el-button>
+                            </div>
+                            <div v-if="getAppPages(app).length > 0" style="display:flex;gap:4px;flex-wrap:wrap;">
+                              <el-tag v-for="(page, pi) in getAppPages(app)" :key="pi" size="small" style="cursor:pointer;"
+                                :type="page.type === 'webview' ? 'warning' : ''"
+                                @click="selectAppPage(app, page)">{{ page.title || page.type }} <span style="opacity:0.5;font-size:10px;">{{ page.type }}</span></el-tag>
+                            </div>
+                            <span v-else style="font-size:12px;color:var(--el-color-warning);">未发现可用页面，请在应用中打开一个窗口后点击刷新</span>
+                          </div>
+                        </el-card>
+                      </div>
+                    </div>
+                  </div>
+                </el-form>
+                <div v-else>
+                  <el-empty :description="t('webNotSupported')" />
+                </div>
+              </div>
+
               <!-- SQL控制界面 -->
               <div v-show="subMenu === 'sql'" class="page">
                 <el-form :model="sqlSettings" class="settings-form"  label-position="top">
@@ -10835,6 +10940,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           <el-option label="Exa" value="exa" ></el-option>
                           <el-option label="Serper" value="serper" ></el-option>
                           <el-option label="Bochaai" value="bochaai" ></el-option>
+                          <el-option label="You.com" value="youcom" ></el-option>
                         </el-select>
                       </el-form-item>
                       <el-form-item :label="t('webCrawling')" class="form-item-align">
@@ -11215,6 +11321,59 @@ function updateElement(el, rawMarkdown, formatFn) {
                       <el-form-item :label="t('apiKey')" class="form-item-align">
                         <el-input
                           v-model="webSearchSettings.bochaai_api_key"
+                          :placeholder="t('apiKeyPlaceholder')"
+                          show-password
+                          @input="autoSaveSettings"
+                          class="full-width-input"
+                        />
+                      </el-form-item>
+                    </div>
+                  </div>
+                  <!-- You.com 配置块 -->
+                  <div class="tool-item" v-show="webSearchSettings.engine === 'youcom'">
+                    <div class="tool-header">
+                      <div class="header-left">
+                        <span>
+                          <el-icon>
+                            <i class="fa-solid fa-globe"></i>
+                          </el-icon>
+                          You.com
+                          <el-link
+                            type="primary"
+                            :underline="false"
+                            href="https://you.com/platform"
+                            target="_blank"
+                          >
+                            <el-icon class="mr-1">
+                              <i class="fa-solid fa-key"></i>
+                            </el-icon>{{ t('gotoAPI') }}
+                          </el-link>
+                        </span>
+                      </div>
+                    </div>
+                    <div class="tool-content">
+                      <el-form-item :label="t('youcomTier')" class="form-item-align">
+                        <el-radio-group v-model="webSearchSettings.youcom_tier" @change="autoSaveSettings">
+                          <el-radio value="free">{{ t('youcomTierFree') }}</el-radio>
+                          <el-radio value="api_key">{{ t('youcomTierApiKey') }}</el-radio>
+                        </el-radio-group>
+                      </el-form-item>
+                      <div v-if="webSearchSettings.youcom_tier === 'free'" style="padding: 8px 12px; background: var(--el-color-info-light-9); border-radius: 6px; font-size: 13px; color: var(--el-text-color-secondary); margin-bottom: 12px;">
+                        <i class="fa-solid fa-circle-info"></i> {{ t('youcomTierFreeNotice') }}
+                      </div>
+                      <el-form-item :label="t('resultCount')" class="form-item-align">
+                        <el-slider
+                          v-model="webSearchSettings.youcom_max_results"
+                          :min="1"
+                          :max="20"
+                          :step="1"
+                          show-input
+                          @input="autoSaveSettings"
+                        />
+                      </el-form-item>
+                      <el-form-item :label="t('apiKey')" class="form-item-align" v-if="webSearchSettings.youcom_tier === 'api_key'">
+                        <el-input
+                          v-model="webSearchSettings.youcom_api_key"
                           :placeholder="t('apiKeyPlaceholder')"
                           show-password
                           @input="autoSaveSettings"
@@ -16958,6 +17117,33 @@ function updateElement(el, rawMarkdown, formatFn) {
                                 </el-input>
                               </el-form-item>
 
+                              <el-form-item :label="t('minimalModeUrl') || '极简模式 URL'" class="form-item-align" label-position="top">
+                                <el-input
+                                  :value="partyURL+'/minimal.html'"
+                                  readonly
+                                  class="full-width-input"
+                                >
+                                  <template #append>
+                                    <el-button @click="copyMinimalEndpoint" class="copy-btn">
+                                      <i class="fa-solid fa-copy"></i>
+                                    </el-button>
+                                  </template>
+                                </el-input>
+                              </el-form-item>
+                              <el-form-item :label="t('islandUrl') || '灵动岛 URL'" class="form-item-align" label-position="top">
+                                <el-input
+                                  :value="partyURL+'/island.html'"
+                                  readonly
+                                  class="full-width-input"
+                                >
+                                  <template #append>
+                                    <el-button @click="copyIslandEndpoint" class="copy-btn">
+                                      <i class="fa-solid fa-copy"></i>
+                                    </el-button>
+                                  </template>
+                                </el-input>
+                              </el-form-item>
+
                             </div>
                           </div>
                         </el-form>
@@ -18812,5 +18998,15 @@ function updateElement(el, rawMarkdown, formatFn) {
   <script src="js/vue_data.js"></script>
   <script src="js/vue_methods.js"></script>
   <script src="js/renderer.js"></script>
+  <script>
+    function onReady() {
+      document.documentElement.classList.remove('loading');
+    }
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+      onReady();
+    } else {
+      document.addEventListener('DOMContentLoaded', onReady);
+    }
+  </script>
 </body>
 </html>

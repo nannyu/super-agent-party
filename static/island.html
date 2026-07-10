@@ -18,6 +18,7 @@
   </style>
 </head>
 <body>
+  <div class="large-dismiss-shield" v-if="isLargeView" @mousedown="onShieldMouseDown"></div>
   <div id="island-container">
     <div id="island"
          ref="island"
@@ -84,15 +85,21 @@
           <div class="quick-weather" v-if="weatherTemp !== null">
             <i :class="'fa-solid ' + weatherIcon"></i>
             <span>{{ weatherTemp }}°</span>
+            <span class="quick-weather-city">{{ weatherCity }}</span>
           </div>
-          <span class="quick-time" style="border:none;padding:0 10px">{{ currentTime }}</span>
+          <span class="quick-time">{{ currentTime }}</span>
           <span class="quick-date">{{ currentDate }}</span>
-          <button class="quick-minimal-btn" @click.stop="toggleMinimalMode" :title="isMinimalMode ? t('minimalModeClose') : t('minimalMode')">
-            <i class="fa-solid fa-feather"></i>
-          </button>
-          <button class="quick-theme-btn" @click.stop="toggleTheme" :title="themeMode === 'dark' ? '切换浅色' : '切换深色'">
-            <i :class="themeMode === 'dark' ? 'fa-solid fa-sun' : 'fa-solid fa-moon'"></i>
-          </button>
+          <div class="quick-right">
+            <button class="quick-minimal-btn" @click.stop="toggleMinimalMode" :title="isMinimalMode ? t('minimalModeClose') : t('minimalMode')">
+              <i class="fa-solid fa-feather"></i>
+            </button>
+            <button class="quick-theme-btn" @click.stop="toggleTheme" :title="themeMode === 'dark' ? '切换浅色' : '切换深色'">
+              <i :class="themeMode === 'dark' ? 'fa-solid fa-sun' : 'fa-solid fa-moon'"></i>
+            </button>
+            <button class="quick-close-btn" @click.stop="closeWindow" :title="islandLang === 'zh-CN' ? '关闭灵动岛' : 'Close Island'">
+              <i class="fa-solid fa-xmark"></i>
+            </button>
+          </div>
         </div>
 
         <!-- 音乐播放中：歌名跑马灯（占满整个矩形） -->
@@ -122,6 +129,13 @@
             <div class="weather-temp" v-if="weatherTemp !== null">{{ weatherTemp }}°C</div>
             <div class="weather-temp" v-else>--°C</div>
             <div class="weather-desc">{{ weatherDesc }}</div>
+            <div class="weather-city-row">
+              <button v-if="!editingCity" class="weather-city-btn" @click.stop="startEditCity">
+                {{ weatherCity }} <i class="fa-solid fa-pen-to-square"></i>
+              </button>
+              <input v-else ref="cityInput" class="weather-city-input" v-model="editCityText"
+                     @keydown.enter="saveEditCity" @blur="saveEditCity" @click.stop />
+            </div>
             <div class="weather-divider"></div>
             <div class="weather-time">{{ currentTime || '--:--' }}</div>
             <div class="weather-date">{{ currentDate }}</div>
@@ -460,7 +474,7 @@
                   <i :class="typeIcon(item.type)"></i>
                 </div>
                 <div class="clip-content" @click.stop="copyToClipboard(item.text)">
-                  <div class="clip-text">{{ item.text.substring(0, 80) }}{{ item.text.length > 80 ? '...' : '' }}</div>
+                  <div class="clip-text">{{ (item.text || '').substring(0, 80) }}{{ (item.text || '').length > 80 ? '...' : '' }}</div>
                   <div class="clip-meta">
                     <span class="clip-time">{{ formatClipboardTime(item.time) }}</span>
                     <span class="clip-source" v-if="item.source === 'ai'">AI</span>
@@ -536,6 +550,48 @@
               </button>
             </div>
           </div>
+
+          <!-- 面板9: 热力图 -->
+          <div class="panel heatmap-panel" :style="panelStyles.p8">
+            <div class="heatmap-header">
+              <i class="fa-solid fa-fire heatmap-icon"></i>
+              <span class="heatmap-title">{{ t('heatmapHeader') }}</span>
+              <span class="heatmap-today" v-if="Object.keys(heatmapData).length">{{ t('todayCount', heatmapTodayCount) }}</span>
+            </div>
+            <div class="heatmap-card" v-if="Object.keys(heatmapData).length">
+              <div class="heatmap-months">
+                <span v-for="m in heatmapGrid.months" :key="m.col" :style="{ gridColumn: m.col + 1 }">{{ m.label }}</span>
+              </div>
+              <div class="heatmap-body">
+                <div class="heatmap-day-labels">
+                  <span v-for="(l, i) in heatmapGrid.dayLabels" :key="i">{{ l }}</span>
+                </div>
+                <div class="heatmap-cells">
+                  <template v-for="(col, ci) in heatmapGrid.grid" :key="ci">
+                    <div v-for="(cell, ri) in col" :key="ci + '-' + ri"
+                         class="heatmap-cell"
+                         :class="{ future: cell.future }"
+                         :style="cell.count ? { backgroundColor: heatmapColor(cell.count) } : {}"
+                         :title="cell.date + ': ' + cell.count">
+                    </div>
+                  </template>
+                </div>
+              </div>
+              <div class="heatmap-legend">
+                <span class="heatmap-legend-label">Less</span>
+                <div class="heatmap-cell legend-cell" style="background:var(--heatmap-0)"></div>
+                <div class="heatmap-cell legend-cell" style="background:var(--heatmap-1)"></div>
+                <div class="heatmap-cell legend-cell" style="background:var(--heatmap-2)"></div>
+                <div class="heatmap-cell legend-cell" style="background:var(--heatmap-3)"></div>
+                <div class="heatmap-cell legend-cell" style="background:var(--heatmap-4)"></div>
+                <span class="heatmap-legend-label">More</span>
+              </div>
+            </div>
+            <div class="heatmap-empty" v-else>
+              <i class="fa-solid fa-fire"></i>
+              <span>{{ t('heatmapEmpty') }}</span>
+            </div>
+          </div>
         </div>
 
         <!-- 面板指示器 -->
@@ -572,13 +628,17 @@
                       @click.stop="switchPanel(7)" :title="t('navTranslate')">
                 <i class="fa-solid fa-language"></i>
               </button>
+              <button class="panel-nav-btn" :class="{ active: activePanel === 8 }"
+                      @click.stop="switchPanel(8)" :title="t('navHeatmap')">
+                <i class="fa-solid fa-fire"></i>
+              </button>
         </div>
       </template>
     </div>
   </div>
 
   <script src="libs/vue.global.prod.js"></script>
-  <script src="island-app.js"></script>
+  <script src="js/island-app.js"></script>
   <script>
     document.addEventListener('DOMContentLoaded', function () {
       const app = createIslandApp();
