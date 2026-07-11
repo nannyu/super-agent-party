@@ -310,6 +310,7 @@ import io
 import os
 from pathlib import Path
 import pickle
+import threading
 import socket
 import sys
 import tempfile
@@ -2845,6 +2846,7 @@ Assistant: 表格如下：
             if memory["id"] == memoryId:
                 cur_memory = memory
                 break
+    if cur_memory: _sanitize_card_strings(cur_memory)
     selectedMemoryName = cur_memory["name"] if cur_memory else settings["memorySettings"]["selectedMemory"]
 
     def resolve_agent_name(raw_model):
@@ -3629,8 +3631,21 @@ async def generate_stream_response(client, reasoner_client, request: ChatRequest
                 if memory["id"] == memoryId:
                     cur_memory = memory
                     break
+            if cur_memory: _sanitize_card_strings(cur_memory)
             if cur_memory and cur_memory["providerId"]:
                 print("长期记忆启用")
+                # 以已有 faiss 索引实际维度为准，防止更换 provider/model 维度不匹配导致数据清空
+                _effective_dims = cur_memory.get("embedding_dims", 1024)
+                _faiss_path = os.path.join(MEMORY_CACHE_DIR, memoryId, "agent-party.faiss")
+                if os.path.exists(_faiss_path):
+                    try:
+                        import faiss
+                        _existing = faiss.read_index(_faiss_path)
+                        if _existing.d != _effective_dims:
+                            print(f"[WARNING] stored dims({_effective_dims}) != faiss actual dims({_existing.d})，以实际维度为准")
+                        _effective_dims = _existing.d
+                    except Exception as e:
+                        print(f"[WARNING] 无法读取已有 faiss 索引维度: {e}")
                 config={
                     "embedder": {
                         "provider": 'openai',
@@ -3638,7 +3653,7 @@ async def generate_stream_response(client, reasoner_client, request: ChatRequest
                             "model": cur_memory['model'],
                             "api_key": cur_memory['api_key'],
                             "openai_base_url":cur_memory["base_url"],
-                            "embedding_dims":cur_memory.get("embedding_dims", 1024)
+                            "embedding_dims":_effective_dims
                         },
                     },
                     "llm": {
@@ -3655,7 +3670,7 @@ async def generate_stream_response(client, reasoner_client, request: ChatRequest
                             "collection_name": "agent-party",
                             "path": os.path.join(MEMORY_CACHE_DIR,memoryId),
                             "distance_strategy": "euclidean",
-                            "embedding_model_dims": cur_memory.get("embedding_dims", 1024)
+                            "embedding_model_dims": _effective_dims
                         }
                     }
                 }
@@ -5926,8 +5941,20 @@ async def generate_complete_response(client,reasoner_client, request: ChatReques
             if memory["id"] == memoryId:
                 cur_memory = memory
                 break
+        if cur_memory: _sanitize_card_strings(cur_memory)
         if cur_memory and cur_memory["providerId"]:
             print("长期记忆启用")
+            _effective_dims = cur_memory.get("embedding_dims", 1024)
+            _faiss_path = os.path.join(MEMORY_CACHE_DIR, memoryId, "agent-party.faiss")
+            if os.path.exists(_faiss_path):
+                try:
+                    import faiss
+                    _existing = faiss.read_index(_faiss_path)
+                    if _existing.d != _effective_dims:
+                        print(f"[WARNING] stored dims({_effective_dims}) != faiss actual dims({_existing.d})，以实际维度为准")
+                    _effective_dims = _existing.d
+                except Exception as e:
+                    print(f"[WARNING] 无法读取已有 faiss 索引维度: {e}")
             config={
                 "embedder": {
                     "provider": 'openai',
@@ -5935,7 +5962,7 @@ async def generate_complete_response(client,reasoner_client, request: ChatReques
                         "model": cur_memory['model'],
                         "api_key": cur_memory['api_key'],
                         "openai_base_url":cur_memory["base_url"],
-                        "embedding_dims":cur_memory.get("embedding_dims", 1024)
+                        "embedding_dims":_effective_dims
                     },
                 },
                 "llm": {
@@ -5952,7 +5979,7 @@ async def generate_complete_response(client,reasoner_client, request: ChatReques
                         "collection_name": "agent-party",
                         "path": os.path.join(MEMORY_CACHE_DIR,memoryId),
                         "distance_strategy": "euclidean",
-                        "embedding_model_dims": cur_memory.get("embedding_dims", 1024)
+                        "embedding_model_dims": _effective_dims
                     }
                 }
             }
@@ -11538,32 +11565,21 @@ from py.overlay_router import router as overlay_router
 app.include_router(overlay_router)
 
 # ---------- 工具 ----------
-def get_dir(mid: str) -> str:
-    return os.path.join(MEMORY_CACHE_DIR, mid)
-
-def get_faiss_path(mid: str) -> str:
-    return os.path.join(get_dir(mid), "agent-party.faiss")
-
-def get_pkl_path(mid: str) -> str:
-    return os.path.join(get_dir(mid), "agent-party.pkl")
-
-def load_index_and_meta(mid: str):
-    import faiss
-    fpath, ppath = get_faiss_path(mid), get_pkl_path(mid)
-    if not (os.path.exists(fpath) and os.path.exists(ppath)):
-        raise HTTPException(status_code=404, detail="memory not found")
-    index = faiss.read_index(fpath)
-    with open(ppath, "rb") as f:
-        raw = pickle.load(f)          # 可能是 tuple 也可能是 dict
-    # 兼容旧数据：如果是 tuple 取第 0 个，否则直接用
-    meta_dict = raw[0] if isinstance(raw, tuple) else raw
-    return index, meta_dict
-
-def save_index_and_meta(mid: str, index, meta: List[Dict[Any, Any]]):
-    import faiss
-    faiss.write_index(index, get_faiss_path(mid))
-    with open(get_pkl_path(mid), "wb") as f:
-        pickle.dump(meta, f)
+def _sanitize_card_strings(memory: dict) -> None:
+    """防御性清理：移除角色卡文本字段中的控制字符（保留 \\n \\r \\t），防止破坏 API 请求"""
+    import re
+    _bad_ctrl = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]')
+    text_keys = ('description', 'personality', 'mesExample', 'systemPrompt',
+                 'firstMes', 'name', 'characterBook')
+    for key in text_keys:
+        val = memory.get(key)
+        if isinstance(val, str):
+            memory[key] = _bad_ctrl.sub('', val)
+    alt_gs = memory.get('alternateGreetings')
+    if isinstance(alt_gs, list):
+        for i in range(len(alt_gs)):
+            if isinstance(alt_gs[i], str):
+                alt_gs[i] = _bad_ctrl.sub('', alt_gs[i])
 
 
 def fmt_iso8605_to_local(iso: str) -> str:
@@ -11578,90 +11594,183 @@ def fmt_iso8605_to_local(iso: str) -> str:
         return iso        # 解析失败就原样返回
 
 
-def flatten_records(meta: Dict[str, Any]) -> List[Dict[str, Any]]:
-    flat = []
-    for uuid, rec in meta.items():
-        flat.append({
-            "idx"        : len(flat),
-            "uuid"       : uuid,
-            "text"       : rec["data"],
-            "created_at" : fmt_iso8605_to_local(rec["created_at"]),
-            "timetamp"   : rec["timetamp"],
-        })
-    return flat
+async def _get_m0_config_for_memory(memory_id: str):
+    """根据 memory_id 获取 mem0 配置，失败抛出 HTTPException"""
+    from py.get_setting import load_settings
+    settings_data = await load_settings()
+    mems = settings_data.get("memories") or []
+    cur_memory = None
+    for m in mems:
+        if m.get("id") == memory_id:
+            cur_memory = m
+            break
+    if not cur_memory:
+        raise HTTPException(status_code=404, detail="memory config not found")
+    if not cur_memory.get("providerId"):
+        raise HTTPException(status_code=400, detail="memory has no embedding provider configured")
 
+    _effective_dims = cur_memory.get("embedding_dims", 1024)
+    _faiss_path = os.path.join(MEMORY_CACHE_DIR, memory_id, "agent-party.faiss")
+    if os.path.exists(_faiss_path):
+        try:
+            import faiss
+            _existing = faiss.read_index(_faiss_path)
+            if _existing.d != _effective_dims:
+                print(f"[WARNING] stored dims({_effective_dims}) != faiss actual dims({_existing.d})，以实际维度为准")
+            _effective_dims = _existing.d
+        except Exception as e:
+            print(f"[WARNING] 无法读取已有 faiss 索引维度: {e}")
 
-# 新增： dict ↔ list 互转工具
-def dict_to_list(meta: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """有序化，保证顺序与 Faiss 索引一致"""
-    return [{uuid: rec} for uuid, rec in meta.items()]
+    # 确保 pickle 是 mem0 兼容的 (docstore, index_to_id) 元组格式
+    _ppath = os.path.join(MEMORY_CACHE_DIR, memory_id, "agent-party.pkl")
+    if os.path.exists(_ppath):
+        try:
+            with open(_ppath, "rb") as f:
+                _raw = pickle.load(f)
+            _needs_migration = False
+            _needs_repair = False
+            if not (isinstance(_raw, tuple) and len(_raw) == 2 and isinstance(_raw[0], dict)):
+                _needs_migration = True
+            else:
+                # 已迁移但可能缺少 user_id，检查第一个条目
+                _docstore = _raw[0]
+                if _docstore:
+                    _first = next(iter(_docstore.values()), {})
+                    if isinstance(_first, dict) and "user_id" not in _first:
+                        _needs_repair = True
+            if _needs_migration or _needs_repair:
+                import faiss
+                index = faiss.read_index(_faiss_path)
+                if _needs_migration:
+                    if isinstance(_raw, dict):
+                        meta_for_migration = _raw
+                    elif isinstance(_raw, tuple) and isinstance(_raw[0], dict):
+                        meta_for_migration = _raw[0]
+                    else:
+                        meta_for_migration = {}
+                else:
+                    # _needs_repair: 已有 (docstore, idx2id) 格式，重建以补充 user_id
+                    _existing_idx2id = _raw[1]
+                    meta_for_migration = {}
+                    for _idx in sorted(_existing_idx2id.keys()):
+                        _vid = _existing_idx2id[_idx]
+                        _payload = _raw[0].get(_vid, {})
+                        meta_for_migration[_vid] = {
+                            "data": _payload.get("data", ""),
+                            "created_at": _payload.get("created_at", ""),
+                            "timetamp": _payload.get("updated_at", _payload.get("created_at", "")),
+                        }
+                docstore = {}
+                idx2id = {}
+                for idx, (vid, rec) in enumerate(meta_for_migration.items()):
+                    data_t = rec.get("data", "") if isinstance(rec, dict) else ""
+                    docstore[vid] = {
+                        "data": data_t,
+                        "hash": hashlib.md5(data_t.encode()).hexdigest(),
+                        "created_at": rec.get("created_at", "") if isinstance(rec, dict) else "",
+                        "updated_at": rec.get("timetamp", rec.get("created_at", "")) if isinstance(rec, dict) else "",
+                        "user_id": memory_id,
+                    }
+                    idx2id[idx] = vid
+                with open(_ppath, "wb") as f:
+                    pickle.dump((docstore, idx2id), f)
+                action = "已迁移" if _needs_migration else "已修复(补充 user_id)"
+                print(f"[INFO] pickle {action}为 mem0 兼容格式: {_ppath}")
+        except Exception as e:
+            print(f"[WARNING] pickle 处理失败: {e}")
 
-def list_to_dict(meta_list: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """列表再压回 dict"""
-    new_meta = {}
-    for item in meta_list:
-        uuid, rec = next(iter(item.items()))
-        new_meta[uuid] = rec
-    return new_meta
+    config = {
+        "embedder": {
+            "provider": "openai",
+            "config": {
+                "model": cur_memory["model"],
+                "api_key": cur_memory["api_key"],
+                "openai_base_url": cur_memory.get("base_url", ""),
+                "embedding_dims": _effective_dims,
+            },
+        },
+        "llm": {
+            "provider": "openai",
+            "config": {
+                "model": settings_data.get("model", ""),
+                "api_key": settings_data.get("api_key", ""),
+                "openai_base_url": settings_data.get("base_url", ""),
+            },
+        },
+        "vector_store": {
+            "provider": "faiss",
+            "config": {
+                "collection_name": "agent-party",
+                "path": os.path.join(MEMORY_CACHE_DIR, memory_id),
+                "distance_strategy": "euclidean",
+                "embedding_model_dims": _effective_dims,
+            },
+        },
+    }
+    return config
+
 
 # ---------- 模型 ----------
 class TextUpdate(BaseModel):
     new_text: str
 
-# ---------- 1. 读取（平铺） ----------
+
+# ---------- 1. 列出所有记忆条目 ----------
 @app.get("/memory/{memory_id}")
 async def read_memory(memory_id: str) -> List[Dict[str, Any]]:
-    _, meta_dict = load_index_and_meta(memory_id)   # 拆包
-    return flatten_records(meta_dict)               # 传字典
+    try:
+        config = await _get_m0_config_for_memory(memory_id)
+        from mem0 import Memory
+        m0 = Memory.from_config(config)
+        results = await asyncio.to_thread(m0.get_all, user_id=memory_id, limit=10000)
+        # mem0 v1.1+ 返回 {"results": [...]} 格式
+        items = results.get("results", []) if isinstance(results, dict) else (results or [])
+        flat = []
+        for item in items:
+            flat.append({
+                "idx": len(flat),
+                "uuid": item.get("id", ""),
+                "text": item.get("memory", ""),
+                "created_at": fmt_iso8605_to_local(item.get("created_at", "")),
+                "timetamp": fmt_iso8605_to_local(item.get("updated_at") or item.get("created_at", "")),
+            })
+        return flat
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
-# ---------- 2. 修改（只改 data） ----------
-@app.put("/memory/{memory_id}/{idx}")
-async def update_text(
-    memory_id: str,
-    idx: int,
-    body: TextUpdate = Body(...)
-) -> dict:
-    index, meta_dict = load_index_and_meta(memory_id)
-    meta_list = dict_to_list(meta_dict)
-    if not (0 <= idx < len(meta_list)):
-        raise HTTPException(status_code=404, detail="index out of range")
-    # 定位 → 改 data
-    uuid, rec = next(iter(meta_list[idx].items()))
-    rec["data"] = body.new_text
-    # 写回
-    save_index_and_meta(memory_id, index, list_to_dict(meta_list))
-    return {"message": "updated", "idx": idx}
+
+# ---------- 2. 新增记忆条目 ----------
+@app.post("/memory/{memory_id}")
+async def add_text(memory_id: str, body: TextUpdate = Body(...)) -> dict:
+    config = await _get_m0_config_for_memory(memory_id)
+    from mem0 import Memory
+    m0 = Memory.from_config(config)
+    await asyncio.to_thread(m0.add, body.new_text, user_id=memory_id, infer=False)
+    return {"message": "added"}
 
 
-# ---------- 3. 删除（按行号） ----------
-@app.delete("/memory/{memory_id}/{idx}")
-async def delete_text(memory_id: str, idx: int) -> dict:
-    import faiss
-    import numpy as np
-    index, meta_dict = load_index_and_meta(memory_id)
-    meta_list = dict_to_list(meta_dict)
-    if not (0 <= idx < len(meta_list)):
-        raise HTTPException(status_code=404, detail="index out of range")
+# ---------- 3. 修改记忆内容 ----------
+@app.put("/memory/{memory_id}/{uuid}")
+async def update_text(memory_id: str, uuid: str, body: TextUpdate = Body(...)) -> dict:
+    config = await _get_m0_config_for_memory(memory_id)
+    from mem0 import Memory
+    m0 = Memory.from_config(config)
+    await asyncio.to_thread(m0.update, memory_id=uuid, data=body.new_text)
+    return {"message": "updated", "uuid": uuid}
 
-    ntotal = index.ntotal
-    print("index.ntotal",index.ntotal)
-    print("len(meta_list)",len(meta_list))
-    if ntotal != len(meta_list):
-        raise RuntimeError("index 与 meta 长度不一致")
 
-    # 1. 重建 Faiss 索引（去掉 idx）
-    ids_to_keep = np.array([i for i in range(ntotal) if i != idx], dtype=np.int64)
-    vecs = np.vstack([index.reconstruct(i) for i in range(ntotal)])
-    new_index = faiss.IndexFlatL2(index.d)   # 跟你建索引时保持一致
-    if vecs.shape[0] - 1 > 0:
-        new_index.add(vecs[ids_to_keep].astype("float32"))
-
-    # 2. 删除列表元素
-    del meta_list[idx]
-
-    # 3. 落盘
-    save_index_and_meta(memory_id, new_index, list_to_dict(meta_list))
-    return {"message": "deleted", "idx": idx}
+# ---------- 4. 删除记忆条目 ----------
+@app.delete("/memory/{memory_id}/{uuid}")
+async def delete_text(memory_id: str, uuid: str) -> dict:
+    config = await _get_m0_config_for_memory(memory_id)
+    from mem0 import Memory
+    m0 = Memory.from_config(config)
+    await asyncio.to_thread(m0.delete, memory_id=uuid)
+    return {"message": "deleted", "uuid": uuid}
 
 @app.post("/api/update_proxy") # 建议改用 POST 表达状态变更
 async def update_proxy():
@@ -12502,6 +12611,17 @@ app.mount("/tool_temp", StaticFiles(directory=TOOL_TEMP_DIR), name="tool_temp")
 app.mount("/uploaded_files", StaticFiles(directory=UPLOAD_FILES_DIR), name="uploaded_files")
 app.mount("/ext", StaticFiles(directory=EXT_DIR), name="ext")
 app.mount("/", StaticFiles(directory=os.path.join(base_path, "static"), html=True), name="static")
+
+# locale JS 和 HTML 禁用缓存，确保开发时修改立即生效
+@app.middleware("http")
+async def _no_cache_for_locales(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.endswith(".html") or path.startswith("/js/locales/"):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 # 简化main函数
 if __name__ == "__main__":

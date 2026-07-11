@@ -400,8 +400,6 @@ function createIslandApp() {
         swipeMoved: false,
         dragOffset: 0,
         isDragging: false,
-        wheelAccum: 0,
-        wheelLock: false,
         suppressClick: false
       };
     },
@@ -980,18 +978,6 @@ function createIslandApp() {
         this.dragOffset = 0;
         this.swipeStartX = 0;
         this.swipeStartY = 0;
-      },
-
-      onWheel(e) {
-        if (this.mode !== 'large') return;
-        if (this.wheelLock) return;
-        this.wheelAccum += e.deltaX || (Math.abs(e.deltaY) > 5 ? e.deltaY : 0);
-        if (Math.abs(this.wheelAccum) >= 60) {
-          this.movePanel(this.wheelAccum > 0 ? 1 : -1);
-          this.wheelAccum = 0;
-          this.wheelLock = true;
-          setTimeout(() => { this.wheelLock = false; }, 800);
-        }
       },
 
       movePanel(dir) {

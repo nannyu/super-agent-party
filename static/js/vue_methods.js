@@ -7127,6 +7127,13 @@ formatMessage(content, index) {
           }
 
           const { dims } = await resp.json();
+          // 编辑时维度变化警告：更换 provider/model 可能导致已有记忆与 faiss 维度不匹配
+          if (this.newMemory.id && oldMemory && oldMemory.embedding_dims && dims !== oldMemory.embedding_dims) {
+            showNotification(
+              `${this.t('embeddingDimsChanged') || 'Embedding dimension changed'}: ${oldMemory.embedding_dims} → ${dims}. ${this.t('existingMemoriesPreserved') || 'Existing memories are preserved but may need re-vectorization.'}`,
+              'warning'
+            );
+          }
           memory.embedding_dims = dims;
           await this.autoSaveSettings();          // 真正落盘
         } catch (e) {
@@ -9072,28 +9079,40 @@ handleCreateSlackSeparator(val) {
       reader.readAsText(file); // 读取文件内容
     },
 
+    _sanitizeCardText(raw, maxLen = 100 * 1024) {
+      if (typeof raw !== 'string') return raw || '';
+      // 移除破坏 JSON / API 传输的控制字符（保留换行、回车、制表符）
+      let cleaned = raw.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+      if (cleaned.length > maxLen) {
+        console.warn(`[_sanitizeCardText] 字段过长 ${cleaned.length} > ${maxLen}，已截断`);
+        cleaned = cleaned.substring(0, maxLen);
+      }
+      return cleaned;
+    },
+
     importMemoryData(jsonData) {
       // 兼容 V2/V3：统一抽出 data
       const data = jsonData.data || jsonData;
+      const s = this._sanitizeCardText.bind(this);
 
       this.newMemory = {
         ...this.newMemory,                      // 保持 providerId 等旧字段
-        name: data.name || '',
-        description: data.description || '',
+        name: s(data.name).substring(0, 512),   // 名称限制 512 字符
+        description: s(data.description),
         avatar: data.avatar || '',
-        personality: data.personality || '',
-        mesExample: data.mes_example || '',
-        systemPrompt: data.system_prompt || '',
-        firstMes: data.first_mes || '',
+        personality: s(data.personality),
+        mesExample: s(data.mes_example),
+        systemPrompt: s(data.system_prompt),
+        firstMes: s(data.first_mes),
         alternateGreetings: Array.isArray(data.alternate_greetings)
-          ? data.alternate_greetings
+          ? data.alternate_greetings.map(g => s(g))
           : [''],
         characterBook:
           Array.isArray(data.character_book?.entries) &&
           data.character_book.entries.length
             ? data.character_book.entries.map(e => ({
-                keysRaw: (e.keys || []).join('\n'),
-                content: e.content || ''
+                keysRaw: s((e.keys || []).join('\n')),
+                content: s(e.content)
               }))
             : [{ keysRaw: '', content: '' }]
       };
@@ -16640,11 +16659,19 @@ clearSegments() {
     // 新增记忆
     async addVectorRow() {
       if (!this.newVectorText.trim()) return
+      this.vectorLoading = true
       try {
         const mid = this.vectorDialogMemoryId
         const res = await fetch(`/memory/${mid}`, {
-          
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ new_text: this.newVectorText.trim() })
         })
+        if (!res.ok) throw new Error(await res.text())
+        this.newVectorText = ''
+        await this.loadVectorTable(mid)
+      } catch (e) {
+        showNotification(e.message, 'error')
       } finally {
         this.vectorLoading = false
       }
@@ -16652,7 +16679,7 @@ clearSegments() {
 
   startEditRow(tableIndex) {
     const row = this.vectorTable[tableIndex]
-    this.editRowIdx = row.idx
+    this.editRowUuid = row.uuid
     this.editRowText = row.text
     this.editRowVisible = true
   },
@@ -16660,7 +16687,7 @@ clearSegments() {
     if (!this.editRowText.trim()) return
     try {
       const mid = this.vectorDialogMemoryId
-      const res = await fetch(`/memory/${mid}/${this.editRowIdx}`, {
+      const res = await fetch(`/memory/${mid}/${this.editRowUuid}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ new_text: this.editRowText.trim() })
@@ -16672,10 +16699,12 @@ clearSegments() {
       showNotification(e.message, 'error')
     }
   },
-  async deleteVectorRow(idx) {
+  async deleteVectorRow(rowIndex) {
+    const uuid = this.vectorTable[rowIndex]?.uuid
+    if (!uuid) return
     try {
       const mid = this.vectorDialogMemoryId
-      const res = await fetch(`/memory/${mid}/${idx}`, { method: 'DELETE' })
+      const res = await fetch(`/memory/${mid}/${uuid}`, { method: 'DELETE' })
       if (!res.ok) throw new Error(await res.text())
       await this.loadVectorTable(mid)
     } catch (e) {

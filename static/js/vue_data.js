@@ -2123,9 +2123,10 @@ main();`,
     vectorDialogMemoryName: '',
     vectorLoading: false,
     vectorTable: [],       // { idx, uuid, text, created_at, timetamp }
-    editRowIdx: null,      // 当前编辑的行号（=后端 idx）
-    editRowText: "",     // 当前编辑的文本
+    editRowUuid: null,     // 当前编辑行的 uuid
+    editRowText: "",        // 当前编辑的文本
     editRowVisible: false,
+    newVectorText: "",      // 新增记忆条目的输入文本
     nodeInstalled: false,   // 探针结果
     nodeInstalling: false,
     nodeProgress: 0,

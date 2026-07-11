@@ -28,8 +28,7 @@
          @click="onIslandClick"
          @pointerdown="onPointerDown"
          @pointermove="onPointerMove"
-         @pointerup="onPointerUp"
-         @wheel.passive="onWheel">
+          @pointerup="onPointerUp">
 
       <!-- 提醒态（所有视图可见） -->
       <div class="alert-content" v-if="alertActive" @click.stop="alertActionHandler ? null : dismissAlert()">
