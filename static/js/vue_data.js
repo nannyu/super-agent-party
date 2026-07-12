@@ -459,13 +459,18 @@ let vue_data = {
     localAppControlSettings: {
       enabled: false,
       browserVision: false,
+      onlyNewScreen: true,
       forceNewInstance: false,
       scannedApps: [],
       connectedApps: {},
       nextPort: 9223,
       scanning: false,
       selectedApp: null,
+      manualApps: [],
     },
+    localAppSearch: "",
+    manualAppInput: "",
+    connectingAppId: null,
     sqlSettings:{
       enabled: false,
       engine: "sqlite",

@@ -437,607 +437,6 @@ async function findAvailablePort(startPort = DEFAULT_PORT, maxAttempts = 20000) 
   throw new Error(`无法找到可用端口，已尝试 ${startPort} 到 ${startPort + maxAttempts - 1}`)
 }
 
-// ============================================================
-// 本地应用控制：扫描本地 Electron 应用
-// ============================================================
-
-function normalizePathForDedup(p) {
-  return (p || '').toLowerCase().replace(/\\/g, '/');
-}
-
-function findElectronExe(dir, maxDepth) {
-  if (maxDepth === undefined) maxDepth = 2;
-  if (!fs.existsSync(dir) || maxDepth < 0) return null;
-  let stat;
-  try { stat = fs.statSync(dir); } catch (e) { return null; }
-  if (!stat.isDirectory()) return null;
-  try {
-    const entries = fs.readdirSync(dir);
-    if (process.platform === 'win32' && entries.includes('electron.exe')) return path.join(dir, 'electron.exe');
-    if (process.platform === 'linux' && entries.includes('electron')) return path.join(dir, 'electron');
-    if (entries.some(f => f.endsWith('.asar'))) return dir;
-    if (entries.includes('resources')) {
-      try {
-        const resEntries = fs.readdirSync(path.join(dir, 'resources'));
-        if (resEntries.some(e => e === 'app' || e === 'app.asar' || e.endsWith('.asar'))) return dir;
-      } catch (e) {}
-    }
-    if (maxDepth > 0) {
-      const skipDirs = process.platform === 'win32'
-        ? ['Windows', 'System32', 'WinSxS', 'Microsoft.NET', 'Common7', 'WindowsApps', 'Package Cache', 'Reference Assemblies', 'MSBuild']
-        : [];
-      for (const entry of entries) {
-        if (skipDirs.includes(entry)) continue;
-        if (entry.startsWith('.')) continue;
-        try {
-          const s = fs.statSync(path.join(dir, entry));
-          if (s.isDirectory()) {
-            const found = findElectronExe(path.join(dir, entry), maxDepth - 1);
-            if (found) return found;
-          }
-        } catch (e) {}
-      }
-    }
-  } catch (e) {}
-  return null;
-}
-
-function quickElectronCheck(dir) {
-  if (!fs.existsSync(dir)) return false;
-  let stat;
-  try { stat = fs.statSync(dir); } catch (e) { return false; }
-  if (!stat.isDirectory()) return false;
-  try {
-    const entries = fs.readdirSync(dir);
-    if (process.platform === 'win32' && entries.includes('electron.exe')) return true;
-    if (entries.some(f => f.endsWith('.asar'))) return true;
-    if (entries.includes('resources')) return true;
-    // Do NOT check for any .exe — too broad, catches installers/uninstallers
-  } catch (e) {}
-  return false;
-}
-
-function checkBinaryIsElectron(binaryPath) {
-  if (!fs.existsSync(binaryPath)) return false;
-  let stat;
-  try { stat = fs.statSync(binaryPath); } catch (e) { return false; }
-  if (!stat.isFile()) return false;
-  try {
-    execSync(`strings "${binaryPath}" 2>/dev/null | head -200 | grep -qiE 'electron|chrome/'`, { encoding: 'utf8', timeout: 5000 });
-    return true;
-  } catch (e) {}
-  try {
-    const lddResult = execSync(`ldd "${binaryPath}" 2>/dev/null | head -50`, { encoding: 'utf8', timeout: 5000 });
-    if (/libffmpeg\.so|libnode\.so|libEGL\.so|libGLESv2\.so/i.test(lddResult)) return true;
-  } catch (e) {}
-  return false;
-}
-
-function extractBinaryPath(execLine) {
-  let cleaned = execLine.replace(/%[fFuUdDnNickvm]/g, '').trim();
-  cleaned = cleaned.replace(/^env\s+(?:[A-Za-z_]\w*=\S+\s+)+/, '').trim();
-  cleaned = cleaned.replace(/^gtk-launch\s+\S+\s*/, '').trim();
-  // Also strip quoted wrapper
-  cleaned = cleaned.replace(/^(["'])(.*)\1$/, '$2').trim();
-  const parts = cleaned.split(/\s+/);
-  for (const part of parts) {
-    if (part.includes('/') && !part.startsWith('-')) return part;
-  }
-  return parts[0] || '';
-}
-
-// ====== Windows: 注册表扫描 ======
-
-function parseRegistryOutput(output) {
-  const entries = [];
-  const lines = output.split(/\r?\n/);
-  let current = null;
-  for (const line of lines) {
-    if (/^HKEY_/.test(line.trim())) {
-      if (current && current.DisplayName) entries.push(current);
-      current = { keyPath: line.trim() };
-      continue;
-    }
-    if (!current) continue;
-    const match = line.match(/^\s{4}(DisplayName|InstallLocation|DisplayVersion|Publisher|UninstallString)\s+REG\w*\s+(.+)/i);
-    if (match) {
-      current[match[1]] = match[2].trim();
-    }
-  }
-  if (current && current.DisplayName) entries.push(current);
-  return entries;
-}
-
-async function scanWinRegistryApps() {
-  const results = [];
-  const roots = [
-    'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
-    'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
-    'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
-  ];
-
-  // Use PowerShell wrapper for UTF-8 encoding (fixes garbled text on non-English Windows)
-  // Combine all 3 roots into a single PowerShell call for speed
-  const combined = roots.map(r => `reg query '${r}' /s`).join('; ');
-  const psCmd = `[Console]::OutputEncoding = [Text.Encoding]::UTF8; ${combined}`;
-
-  try {
-    const output = execSync(`powershell -NoProfile -Command "${psCmd}"`, {
-      encoding: 'utf8',
-      timeout: 25000,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    const entries = parseRegistryOutput(output);
-    for (const entry of entries) {
-      let installPath = '';
-      if (entry.InstallLocation) {
-        installPath = entry.InstallLocation.replace(/^"(.*)"$/, '$1').replace(/\\$/, '');
-        if (installPath.startsWith('"') && installPath.endsWith('"')) {
-          installPath = installPath.slice(1, -1);
-        }
-      } else if (entry.UninstallString) {
-        const us = entry.UninstallString.replace(/^"(.*)"$/, '$1');
-        installPath = path.dirname(us);
-      }
-      if (!installPath || !fs.existsSync(installPath)) continue;
-
-      // Fast pre-check before expensive recursive scan
-      if (!quickElectronCheck(installPath)) continue;
-      const electronPath = findElectronExe(installPath);
-      if (!electronPath) continue;
-
-      results.push({
-        name: entry.DisplayName || path.basename(installPath),
-        path: installPath,
-        version: entry.DisplayVersion || '',
-        bundleId: entry.DisplayName || path.basename(installPath),
-      });
-    }
-  } catch (e) {
-    console.error('[LocalAppControl] 注册表扫描失败:', e.message);
-  }
-
-  return results;
-}
-
-// ====== Windows: 开始菜单扫描 ======
-
-async function scanStartMenuRecursive(dir, addApp, yield_, maxDepth) {
-  if (maxDepth === undefined) maxDepth = 4;
-  if (!fs.existsSync(dir) || maxDepth < 0) return;
-  await yield_();
-  try {
-    const entries = fs.readdirSync(dir);
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry);
-      try {
-        const stat = fs.statSync(fullPath);
-        if (stat.isDirectory()) {
-          if (maxDepth > 0) await scanStartMenuRecursive(fullPath, addApp, yield_, maxDepth - 1);
-        } else if (entry.toLowerCase().endsWith('.lnk')) {
-          await yield_();
-          // Skip installer/uninstaller by shortcut name (quick filter for English systems)
-          const lnkName = path.basename(entry, '.lnk');
-          if (/uninstall|install|update|setup|remove|repair|config/i.test(lnkName)) continue;
-          let target = '';
-          try {
-            const details = shell.readShortcutLink(fullPath);
-            target = details.target || '';
-          } catch (e) {}
-          if (!target || !fs.existsSync(target)) continue;
-          // Skip if target binary is an installer/uninstaller (covers ALL languages — binary filenames are always English)
-          const targetName = path.basename(target, path.extname(target));
-          if (!fs.statSync(target).isDirectory() && /uninstall|install|update|setup|remove|repair/i.test(targetName)) continue;
-          const targetDir = fs.statSync(target).isDirectory() ? target : path.dirname(target);
-          if (!quickElectronCheck(targetDir)) continue;
-          const electronPath = findElectronExe(targetDir);
-          if (!electronPath) continue;
-          // Extract exe name from shortcut target for reliable PID matching
-          const isFileTarget = !fs.statSync(target).isDirectory();
-          const exeName = isFileTarget ? path.basename(target, path.extname(target)) : null;
-          addApp({
-            name: path.basename(entry, '.lnk'),
-            path: targetDir,
-            version: '',
-            bundleId: path.basename(entry, '.lnk'),
-            exeName: exeName,
-          });
-        }
-      } catch (e) {}
-    }
-  } catch (e) {}
-}
-
-async function scanWinStartMenu(addApp, yield_) {
-  const startMenuDirs = [];
-  try {
-    if (process.env.APPDATA) startMenuDirs.push(path.join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs'));
-    if (process.env.PROGRAMDATA) startMenuDirs.push(path.join(process.env.PROGRAMDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs'));
-  } catch (e) {}
-  for (const dir of startMenuDirs) {
-    await scanStartMenuRecursive(dir, addApp, yield_);
-  }
-}
-
-// ====== Windows: 文件系统扫描 ======
-
-async function scanWinFileSystemDirs(dirs, results) {
-  for (const dir of dirs) {
-    if (!fs.existsSync(dir)) continue;
-    try {
-      const entries = fs.readdirSync(dir);
-      for (const entry of entries) {
-        try {
-          const fullPath = path.join(dir, entry);
-          const stat = fs.statSync(fullPath);
-          if (!stat.isDirectory()) continue;
-          if (!quickElectronCheck(fullPath)) continue;
-          const electronPath = findElectronExe(fullPath);
-          if (electronPath) {
-            results.push({
-              name: entry.replace(/\.exe$/i, ''),
-              path: fullPath,
-              version: '',
-              bundleId: entry.replace(/\.exe$/i, ''),
-            });
-          }
-        } catch (e) {}
-      }
-    } catch (e) {}
-  }
-}
-
-// ====== macOS: 解析 .app 包 ======
-
-function checkMacBinaryIsElectron(appPath) {
-  const macosDir = path.join(appPath, 'Contents', 'MacOS');
-  if (!fs.existsSync(macosDir)) return false;
-  try {
-    const files = fs.readdirSync(macosDir);
-    const binFile = files.find(f => !f.startsWith('.'));
-    if (!binFile) return false;
-    const binPath = path.join(macosDir, binFile);
-    try {
-      execSync(`strings "${binPath}" 2>/dev/null | head -100 | grep -qi electron`, { encoding: 'utf8', timeout: 3000 });
-      return true;
-    } catch (e) {}
-  } catch (e) {}
-  return false;
-}
-
-function parseMacApp(appPath, idCounter) {
-  try {
-    const infoPlistPath = path.join(appPath, 'Contents', 'Info.plist');
-    let bundleId = '';
-    let version = '';
-    let name = path.basename(appPath, '.app');
-
-    if (fs.existsSync(infoPlistPath)) {
-      try {
-        const json = execSync(`plutil -convert json -o - "${infoPlistPath}"`, { encoding: 'utf8', timeout: 2000 });
-        const parsed = JSON.parse(json);
-        name = parsed.CFBundleDisplayName || parsed.CFBundleName || name;
-        bundleId = parsed.CFBundleIdentifier || '';
-        version = parsed.CFBundleShortVersionString || parsed.CFBundleVersion || '';
-      } catch (e) {}
-    }
-
-    let isElectron = false;
-
-    // Check 1: Bundle ID contains electron
-    if (/electron/i.test(bundleId)) {
-      isElectron = true;
-    }
-
-    // Check 2: .asar files in Resources
-    if (!isElectron) {
-      const resourcesDir = path.join(appPath, 'Contents', 'Resources');
-      if (fs.existsSync(resourcesDir)) {
-        try {
-          const files = fs.readdirSync(resourcesDir);
-          if (files.some(f => f.endsWith('.asar'))) isElectron = true;
-          if (files.some(f => f === 'package-info')) isElectron = true;
-        } catch (e) {}
-      }
-    }
-
-    // Check 3: Electron Framework fingerprint
-    if (!isElectron) {
-      const frameworksDir = path.join(appPath, 'Contents', 'Frameworks');
-      if (fs.existsSync(frameworksDir)) {
-        try {
-          const entries = fs.readdirSync(frameworksDir);
-          for (const entry of entries) {
-            if (!entry.endsWith('.framework')) continue;
-            const currentPath = path.join(frameworksDir, entry, 'Versions', 'Current');
-            if (!fs.existsSync(currentPath)) continue;
-            try {
-              const subs = fs.readdirSync(currentPath);
-              if (subs.includes('Helpers') && subs.includes('Libraries') && subs.includes('Resources')) {
-                isElectron = true;
-                break;
-              }
-            } catch (e) {}
-          }
-        } catch (e) {}
-      }
-    }
-
-    // Check 4: Binary contains Electron strings (consistent with Linux approach)
-    if (!isElectron) {
-      isElectron = checkMacBinaryIsElectron(appPath);
-    }
-
-    if (!isElectron) return null;
-
-    // Return info without id/running status; final assembly happens in scanLocalElectronApps
-    return {
-      name: name,
-      path: appPath,
-      version: version,
-      bundleId: bundleId,
-    };
-  } catch (e) {
-    return null;
-  }
-}
-
-// ====== Linux: 解析 .desktop 文件 ======
-
-async function parseLinuxDesktopEntry(desktopPath, idCounter) {
-  try {
-    const content = fs.readFileSync(desktopPath, 'utf8');
-    const execMatch = content.match(/^Exec=(.+)$/m);
-    const nameMatch = content.match(/^Name=(.+)$/m);
-    if (!execMatch) return null;
-
-    const execLine = execMatch[1].replace(/%[fFuUdDnNickvm]/g, '').trim();
-    const name = nameMatch ? nameMatch[1] : path.basename(desktopPath, '.desktop');
-
-    // Method 1: Direct "electron" substring in Exec line
-    let isElectron = execLine.toLowerCase().includes('electron');
-
-    // Method 2: Resolve binary path and check the actual binary
-    if (!isElectron) {
-      const binaryPath = extractBinaryPath(execLine);
-      if (binaryPath) {
-        let resolvedPath = binaryPath;
-        try {
-          if (fs.existsSync(binaryPath)) {
-            resolvedPath = fs.realpathSync(binaryPath);
-          }
-        } catch (e) {}
-        isElectron = checkBinaryIsElectron(resolvedPath);
-      }
-    }
-
-    // Method 3: Check desktop file patterns
-    if (!isElectron) {
-      const wmClassMatch = content.match(/^StartupWMClass=(.+)$/m);
-      if (wmClassMatch && /electron|chrome|chromium/i.test(wmClassMatch[1])) {
-        isElectron = true;
-      }
-    }
-
-    if (!isElectron) return null;
-
-    return {
-      name: name,
-      path: execLine,
-      version: '',
-      bundleId: name,
-    };
-  } catch (e) {
-    return null;
-  }
-}
-
-// ====== 跨平台：进程检测 ======
-
-function checkIfAppRunning(identifier) {
-  try {
-    const result = findAppPid(identifier);
-    return result > 0;
-  } catch (e) {
-    return false;
-  }
-}
-
-function findAppPid(identifier) {
-  try {
-    const platform = process.platform;
-    if (platform === 'darwin' || platform === 'linux') {
-      const result = execSync(`pgrep -f "${identifier}" 2>/dev/null || echo "0"`, { encoding: 'utf8', timeout: 3000 });
-      const pids = result.trim().split('\n').filter(p => p).map(Number).filter(p => p > 0 && p !== process.pid);
-      return pids.length > 0 ? pids[0] : 0;
-    } else if (platform === 'win32') {
-      const safeName = identifier.replace(/[\\"'$`]/g, '');
-      try {
-        const result = execSync(`wmic process where "name like '%${safeName}%'" get ProcessId 2>nul`, { encoding: 'utf8', timeout: 5000 });
-        const lines = result.split(/\r?\n/).filter(l => /^\s*\d+\s*$/.test(l.trim()));
-        for (const line of lines) {
-          const pid = parseInt(line.trim());
-          if (pid > 0 && pid !== process.pid) return pid;
-        }
-      } catch (e) {}
-      try {
-        const result = execSync(`tasklist /FI "IMAGENAME eq ${safeName}.exe" 2>nul`, { encoding: 'utf8', timeout: 3000 });
-        const match = result.match(/\b\d+\b/);
-        if (match) {
-          const pid = parseInt(match[0]);
-          if (pid > 0 && pid !== process.pid) return pid;
-        }
-      } catch (e) {}
-      return 0;
-    }
-    return 0;
-  } catch (e) {
-    return 0;
-  }
-}
-
-// ====== 主扫描函数 ======
-
-async function scanLocalElectronApps() {
-  const platform = process.platform;
-  const appsMap = new Map();
-  const idCounter = { val: 0 };
-
-  function addApp(info) {
-    const key = normalizePathForDedup(info.path);
-    const existing = appsMap.get(key);
-    if (existing) {
-      const isInstaller = /uninstall|install|update|setup|remove|repair|config/i;
-      if (info.version && !existing.version) {
-        appsMap.set(key, { ...existing, version: info.version, name: info.name || existing.name });
-      } else if (existing.exeName && isInstaller.test(existing.exeName) && info.exeName && !isInstaller.test(info.exeName)) {
-        // Existing entry points to installer binary; replace with app's real exe
-        appsMap.set(key, { ...existing, name: info.name, exeName: info.exeName });
-      }
-      return;
-    }
-    appsMap.set(key, info);
-  }
-
-  if (platform === 'darwin') {
-    const macPaths = ['/Applications', '/System/Applications'];
-    try { macPaths.push(path.join(os.homedir(), 'Applications')); } catch (e) {}
-
-    // 扫描 Homebrew Caskroom 目录
-    for (const brewPrefix of ['/opt/homebrew/Caskroom', '/usr/local/Caskroom']) {
-      if (!fs.existsSync(brewPrefix)) continue;
-      try {
-        const caskDirs = fs.readdirSync(brewPrefix);
-        for (const d of caskDirs) {
-          const caskPath = path.join(brewPrefix, d);
-          if (!fs.existsSync(caskPath)) continue;
-          let caskStat;
-          try { caskStat = fs.statSync(caskPath); } catch (e) { continue; }
-          if (!caskStat.isDirectory()) continue;
-          try {
-            const versions = fs.readdirSync(caskPath);
-            for (const v of versions) {
-              const vPath = path.join(caskPath, v);
-              if (!fs.existsSync(vPath)) continue;
-              let vStat;
-              try { vStat = fs.statSync(vPath); } catch (e) { continue; }
-              if (!vStat.isDirectory()) {
-                if (v.endsWith('.app')) {
-                  const appInfo = parseMacApp(vPath, idCounter);
-                  if (appInfo) addApp(appInfo);
-                }
-                continue;
-              }
-              try {
-                const contents = fs.readdirSync(vPath);
-                for (const item of contents) {
-                  if (item.endsWith('.app')) {
-                    const appInfo = parseMacApp(path.join(vPath, item), idCounter);
-                    if (appInfo) addApp(appInfo);
-                  }
-                }
-              } catch (e) {}
-            }
-          } catch (e) {}
-        }
-      } catch (e) {}
-    }
-
-    for (const dir of macPaths) {
-      if (!fs.existsSync(dir)) continue;
-      try {
-        const entries = fs.readdirSync(dir);
-        for (const entry of entries) {
-          if (!entry.endsWith('.app')) continue;
-          const appInfo = parseMacApp(path.join(dir, entry), idCounter);
-          if (appInfo) addApp(appInfo);
-        }
-      } catch (e) {
-        console.error('[LocalAppControl] 读取目录失败:', dir, e.message);
-      }
-    }
-  } else if (platform === 'win32') {
-    // Yield helper: periodically release main thread to prevent UI freezing
-    let opCount = 0;
-    const yield_ = async () => {
-      if (++opCount % 10 === 0) await new Promise(r => setTimeout(r, 0));
-    };
-
-    console.log('[LocalAppControl] 开始扫描开始菜单...');
-    await scanWinStartMenu(addApp, yield_);
-    console.log('[LocalAppControl] 开始菜单扫描完成，已发现 ' + appsMap.size + ' 个应用');
-
-    // Quick check: %LOCALAPPDATA%\Programs (few entries, catches portable/squirrel installs)
-    try {
-      const localProgs = path.join(os.homedir(), 'AppData', 'Local', 'Programs');
-      if (fs.existsSync(localProgs)) {
-        await yield_();
-        const entries = fs.readdirSync(localProgs);
-        for (const entry of entries) {
-          await yield_();
-          const fullPath = path.join(localProgs, entry);
-          if (!fs.existsSync(fullPath)) continue;
-          try { if (!fs.statSync(fullPath).isDirectory()) continue; } catch (e) { continue; }
-          if (!quickElectronCheck(fullPath)) continue;
-          if (!findElectronExe(fullPath)) continue;
-          addApp({
-            name: entry.replace(/\.exe$/i, ''),
-            path: fullPath,
-            version: '',
-            bundleId: entry,
-          });
-        }
-      }
-    } catch (e) {}
-  } else {
-    const desktopDirs = [
-      '/usr/share/applications',
-      '/usr/local/share/applications',
-      '/var/lib/snapd/desktop/applications',
-      '/var/lib/flatpak/exports/share/applications',
-    ];
-    try { desktopDirs.push(path.join(os.homedir(), '.local', 'share', 'applications')); } catch (e) {}
-    try { desktopDirs.push(path.join(os.homedir(), '.local', 'share', 'flatpak', 'exports', 'share', 'applications')); } catch (e) {}
-
-    console.log('[LocalAppControl] 开始扫描 Linux 桌面文件...');
-    let linuxCount = 0;
-    for (const dir of desktopDirs) {
-      if (!fs.existsSync(dir)) continue;
-      try {
-        const entries = fs.readdirSync(dir);
-        for (const entry of entries) {
-          if (!entry.endsWith('.desktop')) continue;
-          const appInfo = await parseLinuxDesktopEntry(path.join(dir, entry), idCounter);
-          if (appInfo) { addApp(appInfo); linuxCount++; }
-        }
-      } catch (e) {
-        console.error('[LocalAppControl] 读取目录失败:', dir, e.message);
-      }
-    }
-    console.log('[LocalAppControl] Linux 桌面文件扫描完成，发现 ' + linuxCount + ' 个候选应用');
-  }
-
-  const apps = [];
-  for (const [key, info] of appsMap) {
-    idCounter.val++;
-    const pidId = info.exeName || info.name;
-    const isRunning = checkIfAppRunning(pidId);
-    apps.push({
-      id: 'app_' + idCounter.val,
-      name: info.name,
-      path: info.path,
-      version: info.version || '',
-      bundleId: info.bundleId || info.name,
-      isElectron: true,
-      isRunning: isRunning,
-      pid: isRunning ? findAppPid(pidId) : 0,
-      icon: null,
-    });
-  }
-
-  console.log('[LocalAppControl] 扫描完成，共发现 ' + apps.length + ' 个 Electron 应用');
-  return apps;
-}
 
 async function launchAppWithDebugging(appPath, port, forceNewInstance) {
   try {
@@ -1046,7 +445,7 @@ async function launchAppWithDebugging(appPath, port, forceNewInstance) {
       `--remote-debugging-port=${port}`,
       '--remote-debugging-address=127.0.0.1',
     ];
-    if (forceNewInstance !== false) {
+    if (forceNewInstance) {
       profileDir = path.join(os.tmpdir(), `sap-cdp-profile-${port}`);
       try { fs.mkdirSync(profileDir, { recursive: true }); } catch (e) {}
       debugArgs.push(`--user-data-dir=${profileDir}`);
@@ -1055,10 +454,21 @@ async function launchAppWithDebugging(appPath, port, forceNewInstance) {
 
     let child;
     if (process.platform === 'darwin' && appPath.endsWith('.app')) {
-      // macOS: 用 open -n 强制新实例，避免 NSApplication 路由到已有进程
-      const appName = path.basename(appPath, '.app');
-      const openArgs = ['-n', '-a', appName, '--args', ...debugArgs];
-      child = spawn('open', openArgs, { detached: true, stdio: 'ignore' });
+      // macOS: 直接启动 .app bundle 内的可执行文件，避免 open -n 导致 child 进程
+      // 立即退出使 exitCode 检查误判，以及 NSApplication 实例路由问题
+      const macosDir = path.join(appPath, 'Contents', 'MacOS');
+      let execPath = appPath;
+      if (fs.existsSync(macosDir)) {
+        const files = fs.readdirSync(macosDir);
+        const electronBin = files.find(f => f === 'Electron');
+        const otherBin = files.find(f => !f.startsWith('.') && !f.endsWith('.plist') && f !== 'Electron');
+        const chosen = electronBin || otherBin || (files.length > 0 ? files[0] : null);
+        if (chosen) {
+          execPath = path.join(macosDir, chosen);
+        }
+      }
+      console.log('[LocalAppControl] 启动命令:', execPath, debugArgs.join(' '));
+      child = spawn(execPath, debugArgs, { detached: true, stdio: 'ignore' });
     } else {
       let execPath = appPath;
 
@@ -1089,22 +499,20 @@ async function launchAppWithDebugging(appPath, port, forceNewInstance) {
         } catch (e) {}
       }
 
-      if (process.platform === 'darwin' && appPath.endsWith('.app')) {
-        const macosDir = path.join(appPath, 'Contents', 'MacOS');
-        if (fs.existsSync(macosDir)) {
-          const files = fs.readdirSync(macosDir);
-          const electronBin = files.find(f => f === 'Electron');
-          const otherBin = files.find(f => !f.startsWith('.') && !f.endsWith('.plist') && f !== 'Electron');
-          execPath = path.join(macosDir, electronBin || otherBin || files[0]);
-        }
-      }
+      console.log('[LocalAppControl] 启动命令:', execPath, debugArgs.join(' '));
       child = spawn(execPath, debugArgs, { detached: true, stdio: 'ignore' });
     }
+    child.on('error', (err) => {
+      console.error('[LocalAppControl] 启动进程失败:', err.message);
+    });
+    child.on('exit', (code) => {
+      console.log('[LocalAppControl] 进程退出, code:', code);
+    });
     child.unref();
 
-    // 轮询等待 CDP 端口就绪，最多 15 秒
+    // 轮询等待 CDP 端口就绪，最多 20 秒
     let portReady = false;
-    for (let i = 0; i < 15; i++) {
+    for (let i = 0; i < 20; i++) {
       await new Promise(r => setTimeout(r, 1000));
       try {
         await new Promise((resolve, reject) => {
@@ -1115,8 +523,18 @@ async function launchAppWithDebugging(appPath, port, forceNewInstance) {
           req.setTimeout(800, () => { req.destroy(); reject(new Error('timeout')); });
         });
         portReady = true;
+        console.log('[LocalAppControl] CDP 端口就绪, 耗时:', (i+1), '秒');
+        // 确认进程没有立刻退出
+        await new Promise(r => setTimeout(r, 2000));
+        if (child.exitCode !== null) {
+          console.log(`[LocalAppControl] 进程已退出 code=${child.exitCode}，CDP 端口不可用`);
+          return { success: false, pid: child.pid, port: port, error: `进程退出 code=${child.exitCode}` };
+        }
         break;
       } catch (e) {}
+    }
+    if (!portReady) {
+      console.error('[LocalAppControl] CDP 端口超时未就绪 port:', port);
     }
     return { success: portReady, pid: child.pid, port: port };
   } catch (e) {
@@ -1167,7 +585,7 @@ async function quitAppProcess(pid, appPath) {
     if (appPath) {
       const identifier = path.basename(appPath, '.app').replace(/\.exe$/i, '');
       if (platform === 'win32') {
-        try { execSync(`taskkill /FI "IMAGENAME eq *${identifier}*" /F 2>nul`, { timeout: 5000 }); } catch (e) {}
+        try { execSync(`taskkill /IM "${identifier}.exe" /F 2>nul`, { timeout: 5000 }); } catch (e) {}
       } else if (platform !== 'darwin') {
         try { execSync(`pkill -9 -f "${identifier}" 2>/dev/null || true`, { timeout: 3000 }); } catch (e) {}
       }
@@ -1779,6 +1197,13 @@ app.commandLine.appendSwitch('ignore-gpu-blocklist');
 app.whenReady().then(async () => {
   try {
 
+    // 开发模式下清除 HTTP 和代码缓存，确保静态文件修改立即生效
+    if (isDev) {
+      const mainSession = session.fromPartition('persist:main-session');
+      try { await mainSession.clearCache(); } catch (e) {}
+      try { await mainSession.clearCodeCaches({}); } catch (e) {}
+    }
+
     // ============================================================
     // 账户解析：决定以哪个账户启动
     // ============================================================
@@ -2020,16 +1445,6 @@ app.whenReady().then(async () => {
     // ============================================================
     // 本地应用控制 IPC 处理器
     // ============================================================
-    ipcMain.handle('scan-local-electron-apps', async () => {
-      try {
-        const apps = await scanLocalElectronApps();
-        return apps;
-      } catch (e) {
-        console.error('[LocalAppControl] 扫描失败:', e);
-        return [];
-      }
-    });
-
     ipcMain.handle('launch-app-with-debugging', async (event, { path: appPath, port, forceNewInstance }) => {
       try {
         const result = await launchAppWithDebugging(appPath, port, forceNewInstance);

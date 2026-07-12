@@ -427,7 +427,7 @@ function createIslandApp() {
         return this.mode === 'large';
       },
       showMusicQuick() {
-        return this.hasMusic && this.isPlaying && this.mode !== 'large';
+        return this.hasMusic && this.isPlaying && this.mode === 'still';
       },
       showTimeStill() {
         return !this.hasMusic || !this.isPlaying;
@@ -1457,7 +1457,7 @@ function createIslandApp() {
           if (Date.now() - this.lastPlayAction > 2000) {
             this.isPlaying = data.isPlaying === true;
           }
-          if (this.isPlaying && this.mode !== 'large') this.startMarquee();
+          if (this.showMusicQuick) this.startMarquee();
         } else {
           this.musicMissCount++;
           if (this.musicMissCount >= 3) {
@@ -1993,8 +1993,15 @@ function createIslandApp() {
     },
 
     watch: {
+      showMusicQuick(val) {
+        if (!val) {
+          this.stopMarquee();
+        } else if (this.isPlaying) {
+          this.$nextTick(() => this.startMarquee());
+        }
+      },
       isPlaying(val) {
-        if (val && this.mode !== 'large') {
+        if (val && this.showMusicQuick) {
           this.startMarquee();
         } else {
           this.stopMarquee();
@@ -2007,11 +2014,10 @@ function createIslandApp() {
           if (oldVal === 'large') {
             // Only full restart when exiting large mode
             this.stopMarquee();
-            if (this.isPlaying) {
+            if (this.showMusicQuick) {
               this.$nextTick(() => this.startMarquee());
             }
-          } else if (!this.marqueeAnim && this.isPlaying) {
-            // Marquee not running — start it (still↔quick doesn't restart)
+          } else if (!this.marqueeAnim && this.showMusicQuick) {
             this.startMarquee();
           }
         }

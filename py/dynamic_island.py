@@ -422,7 +422,7 @@ def _query_smtc_windows():
         if not all_sessions:
             return None
 
-        print(f"[DynamicIsland] SMTC sessions: {[(s['app'][-30:], s['title'][:30], s['playing']) for s in all_sessions]}")
+        # print(f"[DynamicIsland] SMTC sessions: {[(s['app'][-30:], s['title'][:30], s['playing']) for s in all_sessions]}")
         playing = next((s for s in all_sessions if s["playing"]), None)
         if playing:
             return playing
@@ -477,7 +477,7 @@ async def poll_music_state():
                 result["sourceAppId"] = source
                 result["position"] = smtc_data.get("position", 0)
                 result["timelineSupported"] = smtc_data.get("timelineSupported", False)
-                print(f"[DynamicIsland] SMTC hit: isPlaying={is_playing}, track={title[:30]}, timeline={result['timelineSupported']}")
+                # print(f"[DynamicIsland] SMTC hit: isPlaying={is_playing}, track={title[:30]}, timeline={result['timelineSupported']}")
                 return result
             elif source:
                 result["isPlaying"] = is_playing
@@ -487,7 +487,7 @@ async def poll_music_state():
                 result["sourceAppId"] = source
                 result["position"] = smtc_data.get("position", 0)
                 result["timelineSupported"] = smtc_data.get("timelineSupported", False)
-                print(f"[DynamicIsland] SMTC session detected (no title): isPlaying={is_playing}, source={source[-40:]}")
+                # print(f"[DynamicIsland] SMTC session detected (no title): isPlaying={is_playing}, source={source[-40:]}")
                 return result
 
     elif platform.system() == "Darwin":

@@ -192,7 +192,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clipboardReadFilePaths: () => ipcRenderer.invoke('clipboard-read-file-paths'),
 
   // 本地应用控制
-  scanLocalElectronApps: () => ipcRenderer.invoke('scan-local-electron-apps'),
   launchAppWithDebugging: (opts) => ipcRenderer.invoke('launch-app-with-debugging', opts),
   quitAppProcess: (opts) => ipcRenderer.invoke('quit-app-process', opts),
 });

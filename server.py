@@ -56,6 +56,7 @@ from py.ext_cdp import (
     ext_evaluate_script, ext_hover, ext_press_key, ext_wait_for,
     ext_list_apps, ext_select_app, ext_refresh_targets, ext_click_by_text,
 )
+from py.local_app_control import scan_local_apps
 from py.computer_use_tool import (
     computer_use_tools, mouse_use_tools, keyboard_use_tools, desktopVision_use_tools,
     mouse_move, mouse_click, mouse_double_click, mouse_drag, mouse_scroll, mouse_hold,
@@ -5283,6 +5284,44 @@ async def generate_stream_response(client, reasoner_client, request: ChatRequest
                                         elif len(msg['content']) == 0:
                                             msg['content'] = ""
 
+                    # === 本地应用控制截图自动注入 ===
+                    local_app_vision = (
+                        settings.get('localAppControlSettings', {}).get('enabled', False) and
+                        settings.get('localAppControlSettings', {}).get('browserVision', False)
+                    )
+                    if local_app_vision and not browser_vision_enabled and '[Getting browser screenshot]' in all_combined_results:
+                        import re, base64, os
+                        match = re.search(r'\[Getting browser screenshot\]\s*(http[^\s]+)', all_combined_results)
+                        if match:
+                            ext_img_url = match.group(1)
+                            if ext_img_url.startswith('http://127.0.0.1:'):
+                                ext_img_path = ext_img_url.split('/uploaded_files/', 1)[-1]
+                                ext_img_path = os.path.join(UPLOAD_FILES_DIR, ext_img_path)
+                                if os.path.exists(ext_img_path):
+                                    with open(ext_img_path, 'rb') as f:
+                                        b64 = base64.b64encode(f.read()).decode('utf-8')
+                                    ext = os.path.splitext(ext_img_path)[1].lower().lstrip('.')
+                                    mime = 'image/' + ('jpeg' if ext in ('jpg','jpeg') else ext)
+                                    ext_img_url = f"data:{mime};base64,{b64}"
+
+                            current_ext_msg = {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "[Getting browser screenshot]\n\n【system info】Local app screenshot injected."},
+                                    {"type": "image_url", "image_url": {"url": ext_img_url}}
+                                ]
+                            }
+                            request.messages.append(current_ext_msg)
+
+                            if settings.get('localAppControlSettings', {}).get('onlyNewScreen', True):
+                                for msg in request.messages[:-1]:
+                                    if isinstance(msg.get('content'), list):
+                                        msg['content'] = [item for item in msg['content'] if item.get('type') != 'image_url']
+                                        if len(msg['content']) == 1 and msg['content'][0].get('type') == 'text':
+                                            msg['content'] = msg['content'][0]['text']
+                                        elif len(msg['content']) == 0:
+                                            msg['content'] = ""
+
 
                     vision_control_enabled = settings.get('visionControlSettings', {}).get('enabled', False)
                     
@@ -9991,6 +10030,58 @@ async def stop_ChromeMCP():
 # ============================================================
 # 本地应用控制 API 端点
 # ============================================================
+@app.post("/scan-local-apps")
+async def scan_local_apps_endpoint(request: Request):
+    from py.local_app_control import scan_local_apps
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    search_paths = data.get("searchPaths", None)
+    try:
+        result = scan_local_apps(search_paths)
+        return JSONResponse({"apps": result})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.post("/validate-app-path")
+async def validate_app_path(request: Request):
+    """验证用户手动添加的应用路径是否为 Chromium 应用"""
+    from py.local_app_control import _is_chromium_dir, _classify_chromium_app, _find_main_exe
+    import os
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    path = data.get("path", "").strip().strip('"').strip("'").strip()
+    if not path or not os.path.exists(path):
+        return JSONResponse({"valid": False, "error": "文件不存在"})
+    if os.path.isdir(path):
+        from pathlib import Path
+        d = Path(path)
+        exe = _find_main_exe(str(d))
+        if exe:
+            path = exe
+        else:
+            return JSONResponse({"valid": False, "error": "目录中未找到可执行文件"})
+    if not path.lower().endswith(".exe"):
+        return JSONResponse({"valid": False, "error": "请选择 .exe 文件"})
+    import subprocess
+    name = os.path.splitext(os.path.basename(path))[0]
+    version = ""
+    try:
+        si = subprocess.run(["powershell", "-NoProfile", "-Command",
+            f"$v=(Get-Item '{path}').VersionInfo; Write-Output ('PN:'+$v.ProductName);Write-Output ('PV:'+$v.ProductVersion)"],
+            capture_output=True, text=True, timeout=10)
+        for line in si.stdout.splitlines():
+            if line.startswith("PN:"): name = line[3:].strip() or name
+            if line.startswith("PV:"): version = line[3:].strip()
+    except Exception:
+        pass
+    return JSONResponse({"valid": True, "name": name, "version": version, "appType": "chromium"})
+
 @app.post("/connect-app-cdp")
 async def connect_app_cdp(request: Request):
     from py.local_app_control import connect_to_external_app
@@ -12617,7 +12708,7 @@ app.mount("/", StaticFiles(directory=os.path.join(base_path, "static"), html=Tru
 async def _no_cache_for_locales(request: Request, call_next):
     response = await call_next(request)
     path = request.url.path
-    if path.endswith(".html") or path.startswith("/js/locales/"):
+    if path.endswith((".html", ".js", ".css")):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"

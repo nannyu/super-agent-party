@@ -12497,7 +12497,15 @@ copyIslandEndpoint(){
   },
 
   async smartConnectApp(app) {
-    if (!this.isElectron || !window.electronAPI) return;
+    if (!this.isElectron || !window.electronAPI) {
+      this.connectingAppId = null;
+      showNotification('需要 Electron 环境', 'error');
+      return;
+    }
+    if (this.connectingAppId) return; // 已有应用在连接中
+    this.connectingAppId = app.id;
+    console.log(`[smartConnect] 开始连接 ${app.name}, port=${app.cdpPort || this.localAppControlSettings.nextPort}, forceNewInstance=${this.localAppControlSettings.forceNewInstance}`);
+    showNotification(`正在连接 ${app.name}…`, 'info');
     const port = app.cdpPort || this.localAppControlSettings.nextPort;
 
     // 1. 先试试直接连接（端口可能已经开着）
@@ -12510,6 +12518,7 @@ copyIslandEndpoint(){
       if (resp.ok) {
         const d = await resp.json();
         if (d.success) {
+          console.log(`[smartConnect] ${app.name} 直连成功 (port=${port})`);
           this.localAppControlSettings.connectedApps[app.id] = {
             appId: app.id, appName: app.name, port: port,
             targets: d.targets || [], usableCount: d.usableCount || 0,
@@ -12519,30 +12528,44 @@ copyIslandEndpoint(){
           app.isRunning = true;
           await this.autoSaveSettings();
           showNotification(this.t('success_connect_app'));
+          this.connectingAppId = null;
           return;
         }
       }
     } catch (e) {}
+    console.log(`[smartConnect] ${app.name} 直连失败, 准备杀掉残留进程并启动调试`);
 
-    // 2. 直连失败 → 启动应用
-    showNotification(this.localAppControlSettings.forceNewInstance ? '正在启动新调试实例…' : '正在启动调试连接…', 'info');
+    // 2. 直连失败，杀掉残留进程后启动调试
+    try { await window.electronAPI.quitAppProcess({ pid: app.pid || 0, path: app.path }); } catch (e) {}
+    app.isRunning = false;
+    app.pid = 0;
+    await new Promise(r => setTimeout(r, 2500));
 
     app.cdpPort = port;
     this.localAppControlSettings.nextPort = port + 1;
+
+    console.log(`[smartConnect] ${app.name} 正在启动调试端口 (path=${app.path}, port=${port})`);
     const launchResult = await window.electronAPI.launchAppWithDebugging({
-      path: app.path,
-      port: port,
+      path: app.path, port: port,
       forceNewInstance: this.localAppControlSettings.forceNewInstance
     });
-    if (launchResult && launchResult.success) {
-      app.isRunning = true;
-      app.pid = launchResult.pid || app.pid;
-    } else {
-      app.isRunning = true;
+    app.isRunning = !!launchResult?.success;
+    app.pid = launchResult?.pid || app.pid;
+    console.log(`[smartConnect] ${app.name} 启动结果: success=${!!launchResult?.success}, pid=${launchResult?.pid}, error=${launchResult?.error || 'none'}`);
+
+    if (!launchResult?.success) {
+      this.connectingAppId = null;
+      let msg = `${app.name}: 无法开启调试端口，该应用可能不支持 CDP 远程调试`;
+      if (!this.localAppControlSettings.forceNewInstance) {
+        msg += '，可尝试开启「开启新实例（独立用户数据）」开关后重试';
+      }
+      showNotification(msg, 'error');
+      return;
     }
 
-    // 3. 轮询连接，最多 20 秒（浏览器启动慢）
-    for (let i = 0; i < 20; i++) {
+    // 3. 轮询连接，最多 3 次
+    console.log(`[smartConnect] ${app.name} 启动成功, 开始轮询连接 CDP (最多3次)`);
+    for (let i = 0; i < 3; i++) {
       await new Promise(r => setTimeout(r, 1000));
       try {
         const resp = await fetch('/connect-app-cdp', {
@@ -12553,6 +12576,7 @@ copyIslandEndpoint(){
         if (resp.ok) {
           const d = await resp.json();
           if (d.success) {
+            console.log(`[smartConnect] ${app.name} 轮询第${i+1}次连接成功 (port=${port})`);
             this.localAppControlSettings.connectedApps[app.id] = {
               appId: app.id, appName: app.name, port: port,
               targets: d.targets || [], usableCount: d.usableCount || 0,
@@ -12560,28 +12584,76 @@ copyIslandEndpoint(){
             };
             await this.autoSaveSettings();
             showNotification(this.t('success_connect_app'));
+            this.connectingAppId = null;
             return;
           }
         }
       } catch (e) {}
     }
-    showNotification('应用已启动但未就绪，稍后重试连接', 'warning');
+    this.connectingAppId = null;
+    let msg = `${app.name}: 连接超时，请确认应用支持 CDP 调试`;
+    if (!this.localAppControlSettings.forceNewInstance) {
+      msg += '，可尝试开启「开启新实例（独立用户数据）」开关后重试';
+    }
+    showNotification(msg, 'error');
   },
 
   async scanLocalApps() {
-    if (!this.isElectron || !window.electronAPI) return;
     this.localAppControlSettings.scanning = true;
+    showNotification('正在扫描本地应用，这可能需要十几秒…', 'info');
     try {
-      const apps = await window.electronAPI.scanLocalElectronApps();
-      this.localAppControlSettings.scannedApps = apps || [];
-      showNotification(this.t('success_scan_apps').replace('{count}', this.localAppControlSettings.scannedApps.length));
+      const response = await fetch('/scan-local-apps', { method: 'POST' });
+      if (response.ok) {
+        const data = await response.json();
+        // 合并手动添加的应用（排在前面，去重）
+        const scannedIds = new Set((data.apps || []).map(a => (a.path || '').toLowerCase()));
+        const manualApps = (this.localAppControlSettings.manualApps || []).filter(a => {
+          return !scannedIds.has((a.path || '').toLowerCase());
+        });
+        this.localAppControlSettings.scannedApps = [...manualApps, ...(data.apps || [])];
+        const types = {};
+        for (const a of data.apps) { types[a.appType] = (types[a.appType] || 0) + 1; }
+        const typeStr = Object.entries(types).map(([k,v]) => `${k}=${v}`).join(' ');
+        showNotification(this.t('success_scan_apps').replace('{count}', data.apps.length) + ` (${typeStr})`);
+      } else { showNotification(this.t('error_launch_app'), 'error'); }
     } catch (e) {
       console.error('扫描本地应用失败:', e);
       showNotification(this.t('error_launch_app'), 'error');
-    } finally {
-      this.localAppControlSettings.scanning = false;
-    }
+    } finally { this.localAppControlSettings.scanning = false; }
     this.autoSaveSettings();
+  },
+
+  async addManualApp() {
+    let path = (this.manualAppInput || '').trim();
+    path = path.replace(/^["']|["']$/g, '');
+    if (!path) return showNotification('请输入应用路径', 'warning');
+    const existing = (this.localAppControlSettings.manualApps || []).find(a => a.path.toLowerCase() === path.toLowerCase());
+    if (existing) return showNotification('该路径已添加', 'warning');
+    // 已在扫描结果中，无需手动添加
+    const alreadyScanned = (this.localAppControlSettings.scannedApps || []).find(a => a.path.toLowerCase() === path.toLowerCase());
+    if (alreadyScanned) return showNotification('该应用已在列表中', 'warning');
+    try {
+      const resp = await fetch('/validate-app-path', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) });
+      if (!resp.ok) { showNotification('验证请求失败', 'error'); return; }
+      const d = await resp.json();
+      if (!d.valid) { showNotification(`无法识别为可用应用: ${d.error}`, 'error'); return; }
+      const app = { id: 'manual_' + Date.now(), name: d.name || path.split('\\').pop().replace('.exe',''), path: path, version: d.version || '', appType: d.appType || 'chromium', isElectron: d.appType === 'electron', isRunning: false, pid: 0, _manual: true };
+      if (!this.localAppControlSettings.manualApps) this.localAppControlSettings.manualApps = [];
+      this.localAppControlSettings.manualApps.push(app);
+      this.localAppControlSettings.scannedApps = [app, ...(this.localAppControlSettings.scannedApps || [])];
+      this.manualAppInput = '';
+      showNotification(`已添加 ${app.name}`);
+      this.autoSaveSettings();
+    } catch (e) { showNotification('验证失败: ' + e.message, 'error'); }
+  },
+
+  removeManualApp(app) {
+    if (!app._manual) return;
+    this.localAppControlSettings.manualApps = (this.localAppControlSettings.manualApps || []).filter(a => a.path !== app.path);
+    this.localAppControlSettings.scannedApps = (this.localAppControlSettings.scannedApps || []).filter(a => !a._manual || a.path !== app.path);
+    if (this.isAppConnected(app)) { delete this.localAppControlSettings.connectedApps[app.id]; }
+    this.autoSaveSettings();
+    showNotification('已移除');
   },
 
   async launchAppWithCDP(app) {

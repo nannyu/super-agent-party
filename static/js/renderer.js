@@ -2180,6 +2180,12 @@ greet('Super Agent Party');`;
       if (!settings || !settings.connectedApps) return 0;
       return Object.keys(settings.connectedApps).length;
     },
+    filteredLocalApps() {
+      const apps = this.localAppControlSettings.scannedApps;
+      const kw = (this.localAppSearch || "").trim().toLowerCase();
+      if (!kw) return apps;
+      return apps.filter(a => a.name.toLowerCase().includes(kw));
+    },
   },
   methods: {
     ...vue_methods,

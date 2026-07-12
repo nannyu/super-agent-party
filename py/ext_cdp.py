@@ -18,8 +18,9 @@ async def _ext_cmd(method, params=None):
         if ports:
             EXTERNAL_CDP_PORT = ports[0]
         else:
-            return {"error": "没有已连接的本地应用"}
-    return await execute_external_cdp(EXTERNAL_CDP_PORT, method, params)
+            return {"error": "没有已连接的外部应用，请先用 ext_list_apps 查看并 ext_select_app 选择", "success": False}
+    result = await execute_external_cdp(EXTERNAL_CDP_PORT, method, params)
+    return result
 
 
 async def ext_click(uid, dblClick=False):
@@ -35,6 +36,8 @@ async def ext_click(uid, dblClick=False):
     }})()
     """
     r = await _ext_cmd("Runtime.evaluate", {"expression": script, "returnByValue": True})
+    if "error" in r:
+        return f"点击失败: {r['error']}"
     raw = r.get("result", {}).get("value", "")
     if isinstance(raw, str) and raw.startswith("{"):
         d = json.loads(raw)
@@ -73,15 +76,19 @@ async def ext_fill(uid, value):
     }})()
     """
     r = await _ext_cmd("Runtime.evaluate", {"expression": script, "returnByValue": True})
+    if "error" in r:
+        return f"填充失败: {r['error']}"
     v = r.get("result", {}).get("value", str(r))
     return v
 
 
 async def ext_screenshot():
     r = await _ext_cmd("Page.captureScreenshot", {"format": "png"})
+    if not r.get("success", True):
+        return f"截图失败: {r.get('error', '未知错误')}"
     data = r.get("data", "")
     if not data:
-        return f"截图失败: {r.get('error', 'no data')}"
+        return f"截图失败: CDP 返回空数据 (可能该应用不支持截图)"
     import base64, os, time
     from py.get_setting import UPLOAD_FILES_DIR, get_port
     img_bytes = base64.b64decode(data)
@@ -138,6 +145,8 @@ async def ext_snapshot():
 })()
 """
     r = await _ext_cmd("Runtime.evaluate", {"expression": script, "returnByValue": True})
+    if "error" in r:
+        return f"快照失败: {r['error']}"
     v = r.get("result", {}).get("value", str(r))
     return v
 
@@ -149,6 +158,8 @@ async def ext_evaluate_script(script_code, args=None):
     if code.startswith("function") or code.startswith("() =>") or code.startswith("async function"):
         code = f"({code})()"
     r = await _ext_cmd("Runtime.evaluate", {"expression": code, "returnByValue": True, "awaitPromise": True})
+    if "error" in r:
+        return f"执行失败: {r['error']}"
     if r.get("result", {}).get("type") == "string":
         return r["result"]["value"]
     if "value" in r.get("result", {}):

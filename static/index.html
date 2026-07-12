@@ -9900,6 +9900,10 @@ function updateElement(el, rawMarkdown, formatFn) {
                       <el-form-item :label="t('appVision')" class="form-item-align" label-position="left">
                         <el-switch v-model="localAppControlSettings.browserVision" @change="autoSaveSettings"></el-switch>
                       </el-form-item>
+                      <el-form-item :label="t('onlyNewScreen')" class="form-item-align" label-position="left"
+                        v-if="localAppControlSettings.browserVision">
+                        <el-switch v-model="localAppControlSettings.onlyNewScreen" @change="autoSaveSettings"></el-switch>
+                      </el-form-item>
                       <el-form-item :label="t('forceNewInstance')" class="form-item-align" label-position="left">
                         <el-switch v-model="localAppControlSettings.forceNewInstance" @change="autoSaveSettings"></el-switch>
                       </el-form-item>
@@ -9907,8 +9911,21 @@ function updateElement(el, rawMarkdown, formatFn) {
                         <el-button type="primary" @click="scanLocalApps" :loading="localAppControlSettings.scanning">
                           {{ localAppControlSettings.scanning ? t('scanning') : t('scanLocalApps') }}
                         </el-button>
-                        <span style="font-size:13px;color:var(--el-text-color-secondary);">
-                          {{ t('connectedApps') }}: {{ connectedAppCount }}
+                        <el-tooltip :content="t('scanLocalAppsHint')" placement="bottom">
+                          <i class="fa-solid fa-circle-info" style="color:var(--el-text-color-secondary);font-size:14px;cursor:help;"></i>
+                        </el-tooltip>
+                        <div v-if="localAppControlSettings.scannedApps.length > 0" style="width:200px;flex:none;">
+                          <el-input v-model="localAppSearch" :placeholder="t('searchApps')" clearable>
+                            <template #prefix><i class="fa-solid fa-magnifying-glass"></i></template>
+                          </el-input>
+                        </div>
+                        <div style="width:200px;flex:none;">
+                          <el-input v-model="manualAppInput" :placeholder="t('manualAppPlaceholder')" clearable></el-input>
+                        </div>
+                        <el-button type="primary" @click="addManualApp" :disabled="!manualAppInput.trim()">{{ t('add') }}</el-button>
+                        <span style="flex:1;"></span>
+                        <span style="font-size:13px;color:var(--el-text-color-secondary);white-space:nowrap;">
+                          {{ t('connectedApps') }}: {{ connectedAppCount }} &nbsp;|&nbsp; {{ t('scannedAppsCount') }}: {{ localAppControlSettings.scannedApps.length }}
                         </span>
                       </div>
 
@@ -9916,7 +9933,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                         <el-empty :description="t('noLocalAppsFound')" />
                       </div>
 
-                      <div v-for="(app, index) in localAppControlSettings.scannedApps" :key="app.id" style="margin-bottom:8px;">
+                      <div v-for="(app, index) in filteredLocalApps" :key="app.id" style="margin-bottom:8px;">
                         <el-card shadow="hover" class="sherpa-card">
                           <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
                             <div style="display:flex;align-items:center;gap:10px;">
@@ -9924,26 +9941,23 @@ function updateElement(el, rawMarkdown, formatFn) {
                               <div>
                                 <span style="font-weight:600;">{{ app.name }}</span>
                                 <span v-if="app.version" style="font-size:12px;color:var(--el-text-color-secondary);margin-left:6px;">v{{ app.version }}</span>
+                                <div style="font-size:11px;color:var(--el-text-color-secondary);word-break:break-all;margin-top:2px;">{{ app.path }}</div>
                               </div>
                             </div>
                             <div style="display:flex;align-items:center;gap:8px;">
-                              <el-tag v-if="app.isRunning && isAppConnected(app)" type="success" size="small">{{ t('appStatusConnected') }}</el-tag>
-                              <el-tag v-else-if="app.isRunning" type="warning" size="small">{{ t('appStatusRunning') }}</el-tag>
-                              <el-tag v-else type="info" size="small">{{ t('appStatusStopped') }}</el-tag>
+                              <el-tag v-if="isAppConnected(app)" type="success" size="small">{{ t('appStatusConnected') }}</el-tag>
+                              <el-tag v-if="app.appType" size="small" :type="app.appType === 'electron' ? 'success' : app.appType === 'browser' ? 'warning' : app.appType === 'cef' ? 'primary' : 'info'">{{ app.appType }}</el-tag>
                             </div>
                           </div>
                           <div class="d-flex gap-2" style="margin-top:8px;">
-                            <el-button v-if="!isAppConnected(app)" size="small" type="primary" @click="smartConnectApp(app)">
-                              <i class="fa-solid fa-plug"></i> 连接调试
+                            <el-button v-if="!isAppConnected(app)" size="small" type="primary" @click="smartConnectApp(app)" :loading="connectingAppId === app.id">
+                              <i v-if="connectingAppId !== app.id" class="fa-solid fa-plug"></i> {{ connectingAppId === app.id ? '连接中...' : '连接调试' }}
                             </el-button>
-                            <el-button v-if="isAppConnected(app)" size="small" type="danger" @click="disconnectFromApp(app)">
-                              <i class="fa-solid fa-plug-circle-xmark"></i> {{ t('disconnectApp') }}
+                            <el-button v-else size="small" type="danger" @click="disconnectFromApp(app)">
+                              <i class="fa-solid fa-plug-circle-xmark"></i> 断开连接
                             </el-button>
-                            <el-button v-if="app.isRunning && !isAppConnected(app)" size="small" type="danger" plain @click="quitLocalApp(app)">
-                              <i class="fa-solid fa-power-off"></i> {{ t('quitApp') }}
-                            </el-button>
-                            <el-button v-if="app.isRunning && isAppConnected(app)" size="small" type="danger" plain @click="quitLocalApp(app)">
-                              <i class="fa-solid fa-power-off"></i> {{ t('quitApp') }}
+                            <el-button v-if="app._manual" size="small" type="info" plain @click="removeManualApp(app)">
+                              <i class="fa-solid fa-trash"></i>
                             </el-button>
                           </div>
                           <div v-if="isAppConnected(app)" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--el-border-color-light);">
