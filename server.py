@@ -12708,7 +12708,7 @@ app.mount("/", StaticFiles(directory=os.path.join(base_path, "static"), html=Tru
 async def _no_cache_for_locales(request: Request, call_next):
     response = await call_next(request)
     path = request.url.path
-    if path.endswith((".html", ".js", ".css")):
+    if path.endswith(".html") or path.startswith("/js/locales/"):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"

@@ -409,6 +409,28 @@ function updateElement(el, rawMarkdown, formatFn) {
             <i :class="isCollapse ? 'fa-solid fa-bars' : 'fa-solid fa-bars-staggered'"></i>
           </el-icon>
         </el-button>
+        <!-- 展开/收起左侧面板（历史对话） -->
+        <el-button 
+          v-if="!isAssistantMode&&!isMobile"
+          @click="handleHistoryToggle()"
+          class="top-bar-btn"
+          text
+          :title="t('chatHistory')">
+          <el-icon>
+            <i class="fa-solid fa-clock-rotate-left"></i>
+          </el-icon>
+        </el-button>
+        <!-- 展开/收起右侧面板（扩展） -->
+        <el-button 
+          v-if="!isAssistantMode&&!isMobile"
+          @click="toggleSidePanel"
+          class="top-bar-btn"
+          text
+          :title="t('extensionsView')">
+          <el-icon>
+            <i class="fa-solid fa-puzzle-piece"></i>
+          </el-icon>
+        </el-button>
         <el-button 
           @click="fixedWindow"
           v-if="isAssistantMode"

@@ -1197,8 +1197,9 @@ app.commandLine.appendSwitch('ignore-gpu-blocklist');
 app.whenReady().then(async () => {
   try {
 
-    // 开发模式下清除 HTTP 和代码缓存，确保静态文件修改立即生效
-    if (isDev) {
+    // 开发模式下默认保留缓存以加快启动速度
+    // 如需清除缓存使静态文件修改立即生效，使用 --clear-cache 命令行参数
+    if (isDev && process.argv.includes('--clear-cache')) {
       const mainSession = session.fromPartition('persist:main-session');
       try { await mainSession.clearCache(); } catch (e) {}
       try { await mainSession.clearCodeCaches({}); } catch (e) {}
@@ -3140,7 +3141,7 @@ app.on('web-contents-created', (event, contents) => {
   });
 
 
-  app.commandLine.appendSwitch('disable-http-cache');
+  // 启用 HTTP 缓存以加快启动速度（原 app.commandLine.appendSwitch('disable-http-cache')）
 
 // 对应的 check-pending-install
 ipcMain.handle('check-pending-install', () => {

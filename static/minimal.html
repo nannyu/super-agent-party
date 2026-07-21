@@ -448,6 +448,9 @@
       var reconnTimer = null;
       var cachedSettings = null;
       var ttsEnabled = false;
+      var _renderRAFId = null;
+      var _lastSnapshot = '';
+      var _scrollRAFId = null;
 
       function connectWS() {
         var p = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -538,6 +541,14 @@
       }
 
       function smartRender() {
+        if (_renderRAFId !== null) return;
+        _renderRAFId = requestAnimationFrame(function() {
+          _renderRAFId = null;
+          _doRender();
+        });
+      }
+
+      function _doRender() {
         var display = [];
         for (var i = 0; i < messages.length; i++) {
           var m = messages[i];
@@ -547,10 +558,28 @@
         var recent = display.slice(-30);
 
         if (recent.length === 0) {
-          msgArea.classList.add('empty');
-          msgArea.innerHTML = '';
+          if (!msgArea.classList.contains('empty')) {
+            msgArea.classList.add('empty');
+            msgArea.innerHTML = '';
+            _lastSnapshot = '';
+          }
           return;
         }
+
+        var snapshot = '';
+        for (var i = 0; i < recent.length; i++) {
+          var m = recent[i];
+          var c = (m.content || '') + '|';
+          if (m.backend_content && Array.isArray(m.backend_content)) {
+            for (var j = 0; j < m.backend_content.length; j++) {
+              c += (m.backend_content[j].role || '') + ':' + (m.backend_content[j].content || '').substring(0, 200) + '|';
+            }
+          }
+          snapshot += m.role + ':' + c.substring(0, 300) + '\n';
+        }
+        if (snapshot === _lastSnapshot) return;
+        _lastSnapshot = snapshot;
+
         msgArea.classList.remove('empty');
 
         var frag = document.createDocumentFragment();
@@ -569,11 +598,12 @@
           }
         }
 
-        // Batch swap
         msgArea.innerHTML = '';
         msgArea.appendChild(frag);
 
-        requestAnimationFrame(function() {
+        if (_scrollRAFId) cancelAnimationFrame(_scrollRAFId);
+        _scrollRAFId = requestAnimationFrame(function() {
+          _scrollRAFId = null;
           msgArea.scrollTop = msgArea.scrollHeight;
         });
       }
@@ -598,8 +628,7 @@
         userInput.style.height = 'auto';
         sendBtn.disabled = true;
         isGenerating = true;
-
-        messages.push({ role: 'user', content: text, agentName: 'User', timestamp: Date.now() });
+        messages.push({ role: 'user', content: text });
         smartRender();
       }
 
@@ -886,8 +915,11 @@
       });
 
       userInput.addEventListener('input', function() {
+        this.style.overflowY = 'hidden';
         this.style.height = 'auto';
-        this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+        var h = Math.min(this.scrollHeight, 120);
+        this.style.height = h + 'px';
+        this.style.overflowY = h >= 120 ? 'auto' : 'hidden';
         sendBtn.disabled = !this.value.trim();
         refreshShortcutMenu();
       });

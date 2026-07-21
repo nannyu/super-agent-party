@@ -16247,6 +16247,13 @@ clearSegments() {
     if (chatArea) chatArea.style.width = '';
     if (sidePanel) sidePanel.style.width = '';
 
+    if (!this.isResizing && this.sidePanelWidth > 0 && this.sidePanelWidth < 100) {
+      this.savedSidePanelWidth = this.sidePanelWidth;
+    }
+    if (this.isResizing) {
+      this.savedSidePanelWidth = null;
+    }
+
     this.sidePanelOpen = false;
     this.chatAreaOpen = true;
     this.chatAreaWidth = 100;
@@ -16281,8 +16288,14 @@ clearSegments() {
       this.sidePanelWidth = 100;
     } else {
       this.chatAreaOpen = true;
-      this.chatAreaWidth = 50;
-      this.sidePanelWidth = 50;
+      const saved = this.savedSidePanelWidth;
+      if (saved && saved > 0 && saved < 100) {
+        this.sidePanelWidth = saved;
+        this.chatAreaWidth = 100 - saved;
+      } else {
+        this.chatAreaWidth = 50;
+        this.sidePanelWidth = 50;
+      }
     }
     this.updatePanelWidths();
   },
@@ -16292,6 +16305,7 @@ clearSegments() {
   resetPanelSizes() {
     this.chatAreaWidth = 50;
     this.sidePanelWidth = 50;
+    this.savedSidePanelWidth = null;
     this.chatAreaOpen = true;
     this.sidePanelOpen = true;
     this.updatePanelWidths();
