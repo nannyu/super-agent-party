@@ -12703,17 +12703,6 @@ app.mount("/uploaded_files", StaticFiles(directory=UPLOAD_FILES_DIR), name="uplo
 app.mount("/ext", StaticFiles(directory=EXT_DIR), name="ext")
 app.mount("/", StaticFiles(directory=os.path.join(base_path, "static"), html=True), name="static")
 
-# locale JS 和 HTML 禁用缓存，确保开发时修改立即生效
-@app.middleware("http")
-async def _no_cache_for_locales(request: Request, call_next):
-    response = await call_next(request)
-    path = request.url.path
-    if path.endswith(".html") or path.startswith("/js/locales/"):
-        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-    return response
-
 # 简化main函数
 if __name__ == "__main__":
     import uvicorn

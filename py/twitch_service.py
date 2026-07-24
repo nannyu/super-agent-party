@@ -2,7 +2,7 @@ import asyncio
 import socket
 import ssl
 import time
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 class SimpleTwitchChat:
     """
@@ -13,12 +13,12 @@ class SimpleTwitchChat:
         self.access_token = access_token.replace("oauth:", "")
         self.channel = channel.lower().lstrip("#")
         self._sock: Optional[socket.socket] = None
-        self._callback: Optional[Callable[[str, str, str], None]] = None
+        self._callback: Optional[Callable[[str, str, str, str], Any]] = None
         self._task: Optional[asyncio.Task] = None
         self._running = False
 
     # ---------- 外部调用 ----------
-    def set_callback(self, cb: Callable[[str, str, str], None]):
+    def set_callback(self, cb: Callable[[str, str, str, str], Any]):
         self._callback = cb
 
     async def start(self):
@@ -163,22 +163,22 @@ class SimpleTwitchChat:
 
         # 5. 回调给 Service 层
         if self._callback:
-            # 这里的回调需确保能接收四个参数：channel, user, msg_content, danmu_type
-            asyncio.create_task(
-                self._callback(self.channel, user, msg_content, danmu_type)
-            )
+            # 回调可为 async 或 sync；直播路由使用 async broadcast。
+            result = self._callback(self.channel, user, msg_content, danmu_type)
+            if asyncio.iscoroutine(result):
+                asyncio.create_task(result)
 
-        def _send(self, msg: str):
-            if self._sock:
-                self._sock.send(f"{msg}\r\n".encode())
+    def _send(self, msg: str):
+        if self._sock:
+            self._sock.send(f"{msg}\r\n".encode())
 
-        def _close_socket(self):
-            if self._sock:
-                try:
-                    self._sock.close()
-                except:
-                    pass
-                self._sock = None
+    def _close_socket(self):
+        if self._sock:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
 
 
 # --------------------------------------------------

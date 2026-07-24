@@ -10481,6 +10481,32 @@ processMarkdownStreamForTTS(message, deltaText, isFinal = false) {
         const offset = message.chunks_voice.filter(v => v.startsWith('danmaku_vrm_silent:')).length;
         const vrmIndex = index - offset; // 计算发给 VRM 的虚拟索引
 
+        const markChunkAsPlayablePlaceholder = (metadata = {}) => {
+            message.audioChunks[index] = {
+                url: null,
+                expressions: chunk_expressions,
+                text: chunk_text,
+                index,
+                ...metadata
+            };
+        };
+
+        if (!chunk_text) {
+            // Tags such as <user=... love=...> may become an empty TTS chunk
+            // after expression/status metadata is stripped. Do not POST empty
+            // text to /tts; enqueue a silent placeholder so playback can advance.
+            if (chunk_expressions.length > 0 && this.ttsWebSocket && (this.vrmOnline || this.vtsOnline)) {
+                const cmd = JSON.stringify({
+                    type: 'startSpeaking',
+                    data: { chunkIndex: index, text: '', voice: 'silence', expressions: chunk_expressions }
+                });
+                this.ttsWebSocket.send(cmd);
+            }
+            markChunkAsPlayablePlaceholder({ _silent: true });
+            this.checkAudioPlayback();
+            return;
+        }
+
         try {
             if (voice === 'silence') {
                 // 静音块走文本通道发指令
@@ -10765,6 +10791,14 @@ processMarkdownStreamForTTS(message, deltaText, isFinal = false) {
         // --- 防御：合成的占位失败块直接跳过，避免 queue 死等 ---
         if (audioChunk && audioChunk._failed) {
             console.warn(`Skipping failed TTS chunk ${currentIndex}`);
+            lastMessage.currentChunk++;
+            setTimeout(() => this.checkAudioPlayback(message, resolve), 0);
+            return;
+        }
+
+        // Silent/metadata-only chunks intentionally have no audio URL. They still
+        // occupy a queue slot so later chunks keep their original indices.
+        if (audioChunk && !audioChunk.url) {
             lastMessage.currentChunk++;
             setTimeout(() => this.checkAudioPlayback(message, resolve), 0);
             return;
@@ -12057,9 +12091,31 @@ copyIslandEndpoint(){
   });
 },
 
+  hasActiveTTSPlayback() {
+    return Boolean(
+      this.isOmniPlaying ||
+      this.readState?.isPlaying ||
+      (this.messages || []).some(message => {
+        if (!message) return false;
+        const audio = message._currentAudio;
+        const audioPlaying = audio && typeof audio.paused === 'boolean' && !audio.paused;
+        return message._ttsRunning || message.isPlaying || audioPlaying;
+      })
+    );
+  },
+
 // 处理弹幕队列 - 新版
   async processDanmuQueue() {
     try {
+      const hasStaleTTSLock = this.TTSrunning &&
+          this.ttsSettings.enabled &&
+          !this.hasActiveTTSPlayback();
+
+      if (hasStaleTTSLock) {
+        console.warn('Detected stale TTS lock before processing danmu queue; releasing it.');
+        this.TTSrunning = false;
+      }
+
       // 基础检查 (保持不变)
       if (!this.isLiveRunning || this.danmu.length === 0 || this.isTyping || 
           (this.TTSrunning && this.ttsSettings.enabled) || this.isProcessingDanmu) {
