@@ -44,6 +44,7 @@ a = Analysis(
         ('static', 'static'),
         ('vrm', 'vrm'),
         ('tha_models', 'tha_models'),
+        ('default_soulx_images', 'default_soulx_images'),
         ('tiktoken_cache', 'tiktoken_cache'),
         ('skills', 'skills'),
         *ffmpeg_data,

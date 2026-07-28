@@ -1330,6 +1330,11 @@ const app = Vue.createApp({
   },
   computed: {
 
+    selectedSoulxImage() {
+      const imgs = (this.SoulxConfig && this.SoulxConfig.images) || [];
+      return imgs.find(i => i.id === this.SoulxConfig.selectedImageId) || null;
+    },
+
     getEiditDialogTitle() {
       if (this.editType === 'system'){
         return this.t('editSystemPrompt');

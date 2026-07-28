@@ -18,6 +18,7 @@ let vmcUdpPort = null;          // osc.UDPPort 实例
 let vmcReceiverActive = false;  // 接收是否运行
 let vrmWindows = [];
 let thaWindows = [];
+let soulxWindows = [];
 let shotOverlay = null
 let minimalWindow = null
 let dynamicIslandWindow = null
@@ -414,6 +415,11 @@ app.commandLine.appendSwitch('remote-allow-origins', '*');
 IS_INTERNAL_MODE_ACTIVE = true;
 console.log('[CDP] 已请求系统自动分配内置浏览器调试端口...');
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096'); // 允许使用 4GB 内存
+if (isDev) {
+  // 开发模式下禁用 HTTP 缓存，修改前端文件（JS/CSS/HTML）后立即生效
+  app.commandLine.appendSwitch('disable-http-cache');
+  console.log('[DEV] HTTP 缓存已关闭，前端修改即时生效');
+}
 // 新增：检测端口是否可用
 function isPortAvailable(port) {
   return new Promise((resolve) => {
@@ -2210,6 +2216,84 @@ ipcMain.handle('upload-to-workspace', async (event, { targetDirPath, sourceFileP
           }
         });
         thaWindows = [];
+      }
+    });
+
+    ipcMain.handle('start-soulx-window', async (_, windowConfig = {}) => {
+      // 单例：已有 SoulX 窗口则聚焦复用，避免多窗口同时播放音频
+      soulxWindows = soulxWindows.filter(w => !w.isDestroyed());
+      if (soulxWindows.length > 0) {
+        const existing = soulxWindows[0];
+        if (existing.isMinimized()) existing.restore();
+        existing.show();
+        existing.focus();
+        return existing.id;
+      }
+
+      const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+      const windowWidth = windowConfig.width || 540;
+      const windowHeight = windowConfig.height || 540;
+
+      const x = windowConfig.x !== undefined ? windowConfig.x : width - windowWidth - 40;
+      let defaultY;
+      if (height >= windowHeight) {
+        defaultY = height - windowHeight;
+      } else {
+        defaultY = 0;
+      }
+      const y = windowConfig.y !== undefined ? windowConfig.y : defaultY;
+
+      const soulxWindow = new BrowserWindow({
+        width: windowWidth,
+        height: windowHeight,
+        x,
+        y,
+        transparent: true,
+        frame: false,
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        hasShadow: false,
+        acceptFirstMouse: true,
+        backgroundColor: 'rgba(0, 0, 0, 0)',
+        webPreferences: {
+          contextIsolation: true,
+          nodeIntegration: true,
+          enableRemoteModule: true,
+          sandbox: false,
+          webgl: true,
+          devTools: isDev,
+          webAudio: true,
+          autoplayPolicy: 'no-user-gesture-required',
+          preload: path.join(__dirname, 'static/js/preload.js')
+        }
+      });
+
+      await soulxWindow.loadURL(`http://${HOST}:${PORT}/soulx.html`);
+      soulxWindow.setIgnoreMouseEvents(false);
+      soulxWindow.setAlwaysOnTop(true);
+      soulxWindows.push(soulxWindow);
+
+      soulxWindow.on('closed', () => {
+        soulxWindows = soulxWindows.filter(w => w !== soulxWindow);
+      });
+
+      return soulxWindow.id;
+    });
+
+    ipcMain.handle('stop-soulx-window', (_, windowId) => {
+      if (windowId !== undefined) {
+        const win = soulxWindows.find(w => w.id === windowId);
+        if (win && !win.isDestroyed()) {
+          win.close();
+        }
+        soulxWindows = soulxWindows.filter(w => w.id !== windowId);
+      } else {
+        soulxWindows.forEach(win => {
+          if (!win.isDestroyed()) {
+            win.close();
+          }
+        });
+        soulxWindows = [];
       }
     });
 

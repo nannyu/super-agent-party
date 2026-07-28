@@ -912,6 +912,14 @@ function updateElement(el, rawMarkdown, formatFn) {
               </div>
             </div>
 
+            <!-- 3.5. 召唤真人伴侣 -->
+            <div class="guide-card" @click="startSoulx">
+              <div class="card-icon orange"><i class="fa-solid fa-face-smile"></i></div>
+              <div class="card-info">
+                <h3>{{ t('summonRealPersonCompanion') }}</h3>
+              </div>
+            </div>
+
             <!-- 3. 创建角色 -->
             <div class="guide-card" @click="activeMenu = 'role'; subMenu = 'memory'">
               <div class="card-icon gold"><i class="fa-solid fa-masks-theater"></i></div>
@@ -3189,7 +3197,7 @@ function updateElement(el, rawMarkdown, formatFn) {
           :title="conversationGroupDialogMode === 'create' ? t('createGroup') : t('renameGroup')"
           width="420px"
         >
-          <el-form label-position="top">
+          <el-form label-position="top" @submit.native.prevent>
             <el-form-item :label="t('groupNamePlaceholder')">
               <el-input
                 v-model="conversationGroupForm.name"
@@ -3216,7 +3224,7 @@ function updateElement(el, rawMarkdown, formatFn) {
           :title="t('renameConversation')"
           width="420px"
         >
-          <el-form label-position="top">
+          <el-form label-position="top" @submit.native.prevent>
             <el-form-item :label="t('renameConversation')">
               <el-input
                 v-model="conversationRenameForm.name"
@@ -15775,6 +15783,171 @@ function updateElement(el, rawMarkdown, formatFn) {
                       </div>
                     </el-form>
                   </div>
+
+                  <!-- SoulX FlashHead 配置页面 -->
+                  <div v-show="subMenu === 'soulx_config'" class="page">
+                    <div class="market-link-banner" @click="openRepository('https://github.com/heshengtao/SoulX-FlashHead')">
+                      <div class="banner-main">
+                        <div class="banner-icon-box">
+                          <i class="fa-solid fa-face-smile"></i>
+                        </div>
+                        <div class="banner-text">
+                          <h3>SoulX FlashHead</h3>
+                          <p>
+                            <el-link type="primary" :underline="false" href="https://github.com/heshengtao/SoulX-FlashHead" target="_blank">
+                              <el-icon class="mr-1"><i class="fa-solid fa-code"></i></el-icon>SoulX-FlashHead GitHub
+                            </el-link>
+                          </p>
+                        </div>
+                        <div class="banner-action">
+                          <span>GO</span>
+                          <i class="fa-solid fa-arrow-right-long"></i>
+                        </div>
+                      </div>
+                    </div>
+
+                    <el-form :model="SoulxConfig" class="settings-form" label-position="top">
+                      <div class="tool-item">
+                          <div class="tool-header" style="display: flex; justify-content: space-between; align-items: center;">
+                          <div class="header-left">
+                            <span>
+                              <el-icon><i class="fa-solid fa-face-smile"></i></el-icon>
+                              {{ t('SoulXFlashHead') }}
+                            </span>
+                          </div>
+                          <div>
+                            <el-tooltip :content="t('startSoulxPet')" placement="top">
+                              <el-button v-if="isElectron" type="primary" @click="startSoulx" circle>
+                                <template v-if="isSoulxStarting">
+                                  <i class="fa-solid fa-spinner fa-spin"></i>
+                                </template>
+                                <template v-else>
+                                  <i class="fa-solid fa-play"></i>
+                                </template>
+                              </el-button>
+                            </el-tooltip>
+                            <el-tooltip :content="t('startSoulxPetWeb')" placement="top">
+                              <el-button type="primary" @click="startSoulxweb" circle>
+                                <i class="fa-solid fa-globe"></i>
+                              </el-button>
+                            </el-tooltip>
+                            <el-tooltip :content="t('stopSoulxPet')" placement="top">
+                              <el-button v-if="isElectron" type="danger" @click="stopSoulx" circle>
+                                <i class="fa-solid fa-stop"></i>
+                              </el-button>
+                            </el-tooltip>
+                          </div>
+                        </div>
+
+                        <div class="tool-content">
+                          <el-alert type="info" :closable="false" class="mb-2">
+                            <template #default>
+                              <div class="alert-content">
+                                {{ t('soulxServiceNotice') }}
+                              </div>
+                            </template>
+                          </el-alert>
+
+                          <el-form-item :label="t('soulxServerUrl')" class="form-item-align">
+                            <el-input v-model="SoulxConfig.serverUrl" placeholder="ws://127.0.0.1:8765" @input="autoSaveSettings" class="full-width-input" />
+                          </el-form-item>
+
+                          <el-form-item :label="t('soulxWindowWidth')" class="form-item-align" label-position="left">
+                            <el-slider v-model="SoulxConfig.windowWidth" :min="256" :max="1024" :step="10" show-input @change="autoSaveSettings" />
+                          </el-form-item>
+
+                          <el-form-item :label="t('soulxWindowHeight')" class="form-item-align" label-position="left">
+                            <el-slider v-model="SoulxConfig.windowHeight" :min="256" :max="1024" :step="10" show-input @change="autoSaveSettings" />
+                          </el-form-item>
+
+                          <el-form-item :label="t('soulxTransparentBg')" class="form-item-align" label-position="left">
+                            <el-switch v-model="SoulxConfig.transparentBg" @change="autoSaveSettings" />
+                          </el-form-item>
+
+                          <el-form-item :label="t('soulxRefImage')" class="form-item-align">
+                            <div style="display:flex; flex-direction:column; align-items:center; gap:14px; width:100%; padding:8px 0;">
+                              <div v-if="selectedSoulxImage" style="width:220px; height:220px; border-radius:12px; overflow:hidden; border:1px solid var(--el-border-color); box-shadow:0 4px 16px rgba(0,0,0,0.12); background:#000;">
+                                <img :src="selectedSoulxImage.url" style="width:100%; height:100%; object-fit:cover; display:block;" />
+                              </div>
+                              <div v-else style="width:220px; height:220px; border-radius:12px; border:1px dashed var(--el-border-color); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; color:var(--el-text-color-secondary);">
+                                <i class="fa-solid fa-image" style="font-size:36px; opacity:0.4;"></i>
+                                <span style="font-size:12px;">{{ t('soulxNoImage') }}</span>
+                              </div>
+                              <el-select
+                                v-model="SoulxConfig.selectedImageId"
+                                @change="autoSaveSettings"
+                                class="full-width-input"
+                                :placeholder="t('soulxSelectImage')"
+                              >
+                                <el-option
+                                  v-for="img in SoulxConfig.images"
+                                  :key="img.id"
+                                  :label="img.name"
+                                  :value="img.id"
+                                >
+                                  <div class="model-option-item">
+                                    <i
+                                      v-if="!img.default"
+                                      class="fa-solid fa-trash-can"
+                                      style="color: #ff0000; margin-right: 6px;"
+                                      @click.stop="deleteSoulxImage(img.id)"
+                                    ></i>
+                                    <i
+                                      v-else
+                                      class="fa-solid fa-lock"
+                                      style="color: #999; margin-right: 6px;"
+                                    ></i>
+                                    <span>{{ img.name }}</span>
+                                  </div>
+                                </el-option>
+                              </el-select>
+                              <el-button @click="showSoulxImageDialog = true" type="primary" class="add-server-btn">
+                                <i class="fa-solid fa-plus"></i> {{ t('soulxUploadImage') }}
+                              </el-button>
+                            </div>
+                          </el-form-item>
+                        </div>
+                      </div>
+                    </el-form>
+                  </div>
+
+                  <!-- SoulX图片上传对话框 -->
+                  <el-dialog append-to-body v-model="showSoulxImageDialog" :title="t('soulxUploadImage')" width="80%">
+                    <div class="upload-container">
+                      <div
+                        class="drop-zone"
+                        @dragover.prevent
+                        @drop.prevent="handleSoulxImageFileDrop"
+                        @click="browseSoulxImageFile"
+                      >
+                        <el-icon :size="50"><i class="fa-solid fa-cloud-arrow-up"></i></el-icon>
+                        <p>{{ t('soulxDropImage') }}</p>
+                      </div>
+                      <div class="compact-file-list" v-if="newSoulxImage.name">
+                        <div class="compact-file-item">
+                          <span class="file-name">{{ newSoulxImage.name }}</span>
+                          <el-button
+                            @click.stop="newSoulxImage.file = null; newSoulxImage.name = ''"
+                            class="delete-icon"
+                            circle
+                          >
+                            <i class="fa-solid fa-trash"></i>
+                          </el-button>
+                        </div>
+                      </div>
+                      <el-input
+                        v-model="newSoulxImage.displayName"
+                        :placeholder="t('soulxImageNamePlaceholder')"
+                        required
+                      />
+                    </div>
+                    <template #footer>
+                      <el-button @click="cancelSoulxImageUpload">{{ t('cancel') }}</el-button>
+                      <el-button type="primary" @click="uploadSoulxImage" :disabled="!newSoulxImage.file">
+                        {{ t('soulxUpload') }}
+                      </el-button>
+                    </template>
+                  </el-dialog>
 
                   <!-- 桌宠配置页面 -->
                   <div v-show="subMenu === 'table_pet'">

@@ -998,6 +998,22 @@ let vue_data = {
       defaultModels: [],
       userModels: []
     },
+    SoulxConfig: {
+      name: 'default',
+      enabled: false,
+      serverUrl: 'ws://127.0.0.1:8765',
+      condImage: '',
+      selectedImageId: '',
+      images: [],
+      transparentBg: true,
+      windowWidth: 540,
+      windowHeight: 540
+    },
+    newSoulxImage: {
+      file: null,
+      name: '',
+      displayName: ''
+    },
     showThaModelDialog: false,
     newThaModel: {
       file: null,
@@ -1654,6 +1670,8 @@ let vue_data = {
     isVRMRunning: false,
     isVRMStarting: false,
     isTHAStarting: false,
+    isSoulxStarting: false,
+    showSoulxImageDialog: false,
     isVRMStopping: false,
     isVRMReloading: false,
     BotConfig: {
@@ -1675,6 +1693,7 @@ let vue_data = {
       { id: 'table_pet', title: 'tablePet', icon: "fa-solid fa-user-ninja"},
       { id: 'THA_pet', title: 'THAPet', icon: "fa-solid fa-hat-wizard"},
       { id: 'vts_config', title: 'vtsbot', icon: "fa-solid fa-child"},
+      { id: 'soulx_config', title: 'SoulXFlashHead', icon: "fa-solid fa-face-smile"},
       { id: 'live_stream', title: 'live_stream_bot', icon: "fa-solid fa-video"},
       { id: 'im_bot', title: 'imBot', icon: 'fa-solid fa-comment' },
       { id: 'read_bot', title: 'readBot', icon: "fa-solid fa-book-open-reader"}, 

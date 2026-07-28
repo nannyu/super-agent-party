@@ -98,6 +98,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   stopVRMWindow: () => ipcRenderer.invoke('stop-vrm-window'),
   startTHAWindow: (windowConfig) => ipcRenderer.invoke('start-tha-window', windowConfig),
   stopTHAWindow: () => ipcRenderer.invoke('stop-tha-window'),
+  startSoulxWindow: (windowConfig) => ipcRenderer.invoke('start-soulx-window', windowConfig),
+  stopSoulxWindow: () => ipcRenderer.invoke('stop-soulx-window'),
   getServerInfo: () => ipcRenderer.invoke('get-server-info'),
   setIgnoreMouseEvents: (ignore, options) => ipcRenderer.invoke('set-ignore-mouse-events', ignore, options),
   getIgnoreMouseStatus: () => ipcRenderer.invoke('get-ignore-mouse-status'),

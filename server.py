@@ -471,7 +471,7 @@ import argparse
 from py.dify_openai import DifyOpenAIAsync
 from py.ClaudeAsOpenAI import AsyncClaudeAsOpenAI
 from py.GeminiAsOpenAI import AsyncGeminiAsOpenAI
-from py.get_setting import EXT_DIR, IS_DOCKER, SKILLS_DIR, _copy_default_skills, convert_to_opus_simple, load_covs, load_settings, save_covs, save_single_cov, save_settings,clean_temp_files_task,base_path,configure_host_port,UPLOAD_FILES_DIR,AGENT_DIR,MEMORY_CACHE_DIR,KB_DIR,DEFAULT_VRM_DIR,DEFAULT_THA_DIR,THA_USER_MODELS_DIR,USER_DATA_DIR,LOG_DIR,TOOL_TEMP_DIR,COVS_PATH,DATABASE_PATH
+from py.get_setting import EXT_DIR, IS_DOCKER, SKILLS_DIR, _copy_default_skills, convert_to_opus_simple, load_covs, load_settings, save_covs, save_single_cov, save_settings,clean_temp_files_task,base_path,configure_host_port,UPLOAD_FILES_DIR,AGENT_DIR,MEMORY_CACHE_DIR,KB_DIR,DEFAULT_VRM_DIR,DEFAULT_THA_DIR,THA_USER_MODELS_DIR,DEFAULT_SOULX_IMAGES_DIR,SOULX_IMAGES_DIR,USER_DATA_DIR,LOG_DIR,TOOL_TEMP_DIR,COVS_PATH,DATABASE_PATH
 from py.llm_tool import get_image_base64,get_image_media_type
 timetamp = time.time()
 log_path = os.path.join(LOG_DIR, f"backend_{timetamp}.log")
@@ -8427,6 +8427,7 @@ class TTSConnectionManager:
         self.main_connections: List[WebSocket] = []
         self.vrm_connections: List[WebSocket] = []
         self.tha_connections: List[WebSocket] = []
+        self.soulx_connections: List[WebSocket] = []
         self.overlay_connections: list[WebSocket] = []
 
     async def connect_main(self, websocket: WebSocket):
@@ -8455,6 +8456,15 @@ class TTSConnectionManager:
     def disconnect_tha(self, websocket: WebSocket):
         if websocket in self.tha_connections:
             self.tha_connections.remove(websocket)
+
+    async def connect_soulx(self, websocket: WebSocket):
+        await websocket.accept()
+        self.soulx_connections.append(websocket)
+        logging.info(f"SoulX interface connected. Total: {len(self.soulx_connections)}")
+
+    def disconnect_soulx(self, websocket: WebSocket):
+        if websocket in self.soulx_connections:
+            self.soulx_connections.remove(websocket)
 
     async def broadcast_to_vrm(self, message: Union[str, bytes]):
         """核心：同时支持字符串 JSON 和二进制 Blob 透传"""
@@ -8495,18 +8505,23 @@ class TTSConnectionManager:
 
     async def broadcast_to_vrm(self, message: Union[str, bytes]):
         """核心广播逻辑：区分发送内容"""
-        # 1. 如果是二进制（音频流），只发给真正的 VRM 页面
+        # 1. 如果是二进制（音频流），发给 VRM 和 SoulX 窗口
         if isinstance(message, bytes):
             for conn in list(self.vrm_connections):
                 try: await conn.send_bytes(message)
                 except: self.disconnect_vrm(conn)
+            for conn in list(self.soulx_connections):
+                try: await conn.send_bytes(message)
+                except: self.disconnect_soulx(conn)
         
-        # 2. 如果是字符串（指令/文字），发给 VRM 和字幕页面
+        # 2. 如果是字符串（指令/文字），发给 VRM、SoulX 和字幕页面
         else:
             for conn in list(self.vrm_connections):
                 try: await conn.send_text(message)
                 except: self.disconnect_vrm(conn)
-            
+            for conn in list(self.soulx_connections):
+                try: await conn.send_text(message)
+                except: self.disconnect_soulx(conn)
             for conn in list(self.overlay_connections):
                 try: await conn.send_text(message)
                 except: self.disconnect_overlay(conn)
@@ -8717,6 +8732,24 @@ async def vrm_websocket_endpoint(websocket: WebSocket):
     finally:
         tts_manager.disconnect_vrm(websocket)
 
+@app.websocket("/ws/soulx")
+async def soulx_websocket_endpoint(websocket: WebSocket):
+    """SoulX FlashHead 窗口 WebSocket：接收主窗口发来的 TTS 音频和指令"""
+    await tts_manager.connect_soulx(websocket)
+    try:
+        while True:
+            msg = await websocket.receive()
+            if "text" in msg:
+                data = json.loads(msg["text"])
+                if data.get('type') == 'animationComplete':
+                    await tts_manager.send_to_main(msg["text"])
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    except Exception as e:
+        logging.error(f"WS error in SoulX: {e}")
+    finally:
+        tts_manager.disconnect_soulx(websocket)
+
 @app.websocket("/ws/tha")
 async def tha_websocket_endpoint(websocket: WebSocket):
     """THA 桌面宠物 WebSocket：接收控制指令，返回 JPEG 帧"""
@@ -8843,7 +8876,8 @@ async def subtitles_websocket_endpoint(websocket: WebSocket):
 async def get_tts_status():
     return {
         "vrm_connections": len(tts_manager.vrm_connections),
-        "vts_active": vts_instance.is_running, # 新增
+        "soulx_connections": len(tts_manager.soulx_connections),
+        "vts_active": vts_instance.is_running,
         "overlay_connections": len(tts_manager.overlay_connections),
         "main_connections": len(tts_manager.main_connections)
     }
@@ -9114,10 +9148,11 @@ async def text_to_speech(request: Request):
             system_voice_name = tts_settings.get('systemVoiceName', None)
             system_rate = int(tts_settings.get('systemRate', 200))
             if mobile_optimized: system_rate = int(system_rate * 0.95)
-            
+
             def sync_generate_wav(input_text, voice_name, rate, req_index):
                 temp_filename = os.path.join(TOOL_TEMP_DIR, f"temp_tts_{req_index}_{uuid.uuid4().hex[:8]}.wav")
                 wav_data = b""
+                ps_file_path = ""
                 try:
                     if platform.system() == 'Darwin':
                         cmd = ['say', '-o', temp_filename, '--data-format=LEI16@22050', input_text]
@@ -9125,18 +9160,37 @@ async def text_to_speech(request: Request):
                         if rate: cmd.extend(['-r', str(rate)])
                         subprocess.run(cmd, check=True)
                     else:
-                        import pyttsx3
-                        engine = pyttsx3.init()
-                        engine.setProperty('rate', rate)
-                        if voice_name:
-                            for v in engine.getProperty('voices'):
-                                if voice_name.lower() in v.name.lower() or voice_name == v.id:
-                                    engine.setProperty('voice', v.id); break
-                        engine.save_to_file(input_text, temp_filename)
-                        engine.runAndWait()
+                        # 使用 PowerShell + System.Speech 子进程替代 pyttsx3
+                        # pyttsx3 全局单例在长文本时 _inLoop 永久卡死，导致后续所有 TTS 静音
+                        rate_val = int(round((rate - 175) / 25))
+                        rate_val = max(-10, min(10, rate_val))
+                        ps_file_path = os.path.join(TOOL_TEMP_DIR, f"tts_script_{uuid.uuid4().hex[:8]}.ps1")
+                        text_file = temp_filename + '.txt'
+                        with open(text_file, 'w', encoding='utf-8') as tf:
+                            tf.write(input_text)
+                        with open(ps_file_path, 'w', encoding='utf-8') as f:
+                            f.write('$ErrorActionPreference = "Stop"\n')
+                            f.write('Add-Type -AssemblyName System.Speech\n')
+                            f.write(f'$s = New-Object System.Speech.Synthesis.SpeechSynthesizer\n')
+                            f.write(f'$s.Rate = {rate_val}\n')
+                            if voice_name:
+                                f.write(f'$vn = "{voice_name}"\n')
+                                f.write('try { $s.SelectVoice($vn) } catch {}\n')
+                            f.write(f'$s.SetOutputToWaveFile("{temp_filename}")\n')
+                            f.write(f'$text = Get-Content -Path "{text_file}" -Raw -Encoding UTF8\n')
+                            f.write('$s.Speak($text)\n')
+                            f.write('$s.Dispose()\n')
+                        subprocess.run(
+                            ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps_file_path],
+                            check=True, capture_output=True, timeout=60
+                        )
+                        if os.path.exists(text_file): os.remove(text_file)
                     if os.path.exists(temp_filename): wav_data = open(temp_filename, 'rb').read()
+                except subprocess.TimeoutExpired:
+                    logger.warning(f"System TTS timeout ({len(input_text)} chars), text truncated in response")
                 finally:
                     if os.path.exists(temp_filename): os.remove(temp_filename)
+                    if ps_file_path and os.path.exists(ps_file_path): os.remove(ps_file_path)
                 return wav_data
 
             async def generate_audio():
@@ -11503,6 +11557,137 @@ async def tha_config():
     return {"THAConfig": settings.get("THAConfig", {})}
 
 
+@app.get("/soulx_config")
+async def soulx_config():
+    settings = await load_settings()
+    return {"SoulxConfig": settings.get("SoulxConfig", {})}
+
+
+@app.post("/soulx_config")
+async def set_soulx_config(request: Request):
+    """从SoulX页面前端更新参考图选择"""
+    try:
+        payload = await request.json()
+        settings = await load_settings()
+        soulx = settings.get("SoulxConfig", {})
+        if "selectedImageId" in payload:
+            soulx["selectedImageId"] = payload["selectedImageId"]
+            settings["SoulxConfig"] = soulx
+            await save_settings(settings)
+        return {"success": True}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
+
+
+def _soulx_image_id_from_name(display_name: str) -> str:
+    """生成安全的图片id（同时作为文件名和FlashHead的person_name）"""
+    safe = re.sub(r'[\\/:*?"<>|.\s]+', '_', display_name).strip('_')[:50]
+    if not safe:
+        safe = f"img_{uuid.uuid4().hex[:8]}"
+    candidate = safe
+    idx = 2
+    while os.path.exists(os.path.join(SOULX_IMAGES_DIR, f"{candidate}.png")):
+        candidate = f"{safe}_{idx}"
+        idx += 1
+    return candidate
+
+
+@app.post("/upload_soulx_image")
+async def upload_soulx_image(
+    request: Request,
+    file: UploadFile = File(...),
+    display_name: str = Form(...)
+):
+    try:
+        data = await file.read()
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        image_id = _soulx_image_id_from_name(display_name.strip() or (file.filename or "").rsplit('.', 1)[0])
+        os.makedirs(SOULX_IMAGES_DIR, exist_ok=True)
+        img.save(os.path.join(SOULX_IMAGES_DIR, f"{image_id}.png"), format="PNG")
+        return JSONResponse(content={
+            "success": True,
+            "image": {
+                "id": image_id,
+                "name": display_name.strip() or image_id,
+                "url": f"/uploaded_files/soulx_images/{image_id}.png"
+            }
+        })
+    except Exception as e:
+        logger.error(f"上传SoulX参考图失败: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": f"上传失败: {str(e)}"}
+        )
+
+
+@app.get("/get_soulx_images")
+async def get_soulx_images(request: Request):
+    try:
+        images = []
+        seen = set()
+        # 默认形象（不可删除，不可被同名覆盖），排在前面
+        default_dir = DEFAULT_SOULX_IMAGES_DIR
+        if os.path.isdir(default_dir):
+            for fname in sorted(os.listdir(default_dir)):
+                if fname.lower().endswith('.png'):
+                    stem = fname[:-4]
+                    seen.add(stem)
+                    images.append({
+                        "id": stem,
+                        "name": stem,
+                        "url": f"/default_soulx_images/{fname}",
+                        "default": True
+                    })
+        # 用户上传的形象
+        if os.path.isdir(SOULX_IMAGES_DIR):
+            for fname in sorted(os.listdir(SOULX_IMAGES_DIR)):
+                if fname.lower().endswith('.png'):
+                    stem = fname[:-4]
+                    if stem in seen: continue
+                    images.append({
+                        "id": stem,
+                        "name": stem,
+                        "url": f"/uploaded_files/soulx_images/{fname}"
+                    })
+        return JSONResponse(content={
+            "success": True,
+            "images": images,
+            "dir": os.path.abspath(SOULX_IMAGES_DIR)
+        })
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": f"获取参考图列表失败: {str(e)}"}
+        )
+
+
+@app.delete("/delete_soulx_image/{image_id}")
+async def delete_soulx_image(image_id: str):
+    try:
+        if not re.fullmatch(r'[\w\-]+', image_id):
+            return JSONResponse(status_code=400, content={"success": False, "message": "非法的图片id"})
+        # 禁止删除默认形象
+        default_path = os.path.join(DEFAULT_SOULX_IMAGES_DIR, f"{image_id}.png")
+        if os.path.exists(default_path):
+            return JSONResponse(status_code=403, content={"success": False, "message": "默认形象不可删除"})
+        path = os.path.join(SOULX_IMAGES_DIR, f"{image_id}.png")
+        if not os.path.exists(path):
+            return JSONResponse(status_code=404, content={"success": False, "message": "图片不存在"})
+        os.remove(path)
+        settings = await load_settings()
+        soulx = settings.get("SoulxConfig", {})
+        if soulx.get("selectedImageId") == image_id:
+            soulx["selectedImageId"] = ""
+            settings["SoulxConfig"] = soulx
+            await save_settings(settings)
+        return JSONResponse(content={"success": True, "message": "参考图已删除"})
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": f"删除失败: {str(e)}"}
+        )
+
+
 @app.post("/tha_config")
 async def set_tha_config(request: Request):
     """从THA页面前端更新模型选择"""
@@ -12698,6 +12883,7 @@ mcp.mount()
 
 app.mount("/vrm", StaticFiles(directory=DEFAULT_VRM_DIR), name="vrm")
 app.mount("/tha_models", StaticFiles(directory=DEFAULT_THA_DIR), name="tha_models")
+app.mount("/default_soulx_images", StaticFiles(directory=DEFAULT_SOULX_IMAGES_DIR), name="default_soulx_images")
 app.mount("/tool_temp", StaticFiles(directory=TOOL_TEMP_DIR), name="tool_temp")
 app.mount("/uploaded_files", StaticFiles(directory=UPLOAD_FILES_DIR), name="uploaded_files")
 app.mount("/ext", StaticFiles(directory=EXT_DIR), name="ext")
