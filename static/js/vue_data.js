@@ -882,6 +882,7 @@ let vue_data = {
       {"name": "comfyuiButton", "enabled": false},
       {"name": "vrmButton", "enabled": true},
       {"name": "thaButton", "enabled": true},
+      {"name": "soulxButton", "enabled": true},
       {"name": "behaviorBotton", "enabled": false},
       {"name": "groupChatBotton", "enabled": true},
     ],
@@ -918,6 +919,7 @@ let vue_data = {
       {"name": "comfyuiButton", "enabled": false},
       {"name": "vrmButton", "enabled": true},
       {"name": "thaButton", "enabled": true},
+      {"name": "soulxButton", "enabled": true},
       {"name": "behaviorBotton", "enabled": false},
       {"name": "groupChatBotton", "enabled": true},
     ],
@@ -954,6 +956,7 @@ let vue_data = {
       {"name": "comfyuiButton", "enabled": false},
       {"name": "vrmButton", "enabled": true},
       {"name": "thaButton", "enabled": true},
+      {"name": "soulxButton", "enabled": true},
       {"name": "behaviorBotton", "enabled": false},
       {"name": "groupChatBotton", "enabled": false},
     ],
@@ -1006,8 +1009,8 @@ let vue_data = {
       selectedImageId: '',
       images: [],
       transparentBg: true,
-      windowWidth: 540,
-      windowHeight: 540
+      windowWidth: 512,
+      windowHeight: 512
     },
     newSoulxImage: {
       file: null,

@@ -36,6 +36,8 @@
   var expectedWidth = 512;
   var expectedHeight = 512;
   var condImageDrawn = false;
+  var condImageEl = null;   // 缓存的参考图片 Image 元素
+  var showingCond = false;  // 当前是否正在显示参考图
   var renderLoopStarted = false;
 
   // ---- 音画同步状态 ----
@@ -109,6 +111,11 @@
       var reader = new FileReader();
       reader.onload = function () {
         condImageB64 = String(reader.result).split(',')[1] || '';
+        // 预载参考图片，用于空闲时显示
+        condImageEl = new Image();
+        condImageEl.onload = function () { condImageEl._loaded = true; };
+        condImageEl.src = resolvedUrl;
+        if (/^data:/i.test(resolvedUrl)) condImageEl._loaded = true;
         startRenderLoop();
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         if (!transparentBg) drawCondImage();
@@ -213,6 +220,12 @@
             isConnecting = false;
             if (msg.cond_preview) {
               condImageSrc = 'data:image/png;base64,' + msg.cond_preview;
+              // 更新缓存的参考图为 matted 版本（透明背景）
+              condImageEl = new Image();
+              condImageEl.onload = function () { condImageEl._loaded = true; };
+              condImageEl.src = condImageSrc;
+              condImageEl._loaded = true; // data: URL 同步可用
+              showingCond = false;
             }
             condImageDrawn = false;
             drawCondImage();
@@ -220,9 +233,9 @@
             // 本地路径模式：直接传文件路径，WSL2 后端自动转换为 /mnt/... 路径
             break;
           case 'frames_meta':
-            if (msg.width && msg.height && (msg.width * srScale() !== canvas.width || msg.height * srScale() !== canvas.height)) {
-              canvas.width = msg.width * srScale();
-              canvas.height = msg.height * srScale();
+            if (msg.width && msg.height && (msg.width !== canvas.width || msg.height !== canvas.height)) {
+              canvas.width = msg.width;
+              canvas.height = msg.height;
             }
             if (msg.fmt) frameFormat = 'image/' + msg.fmt;
             samplesProcessed = (msg.chunk_idx + 1) * chunkAudioSamples;
@@ -326,7 +339,6 @@
         octx.clearRect(0, 0, w * 2, h * 2);
         octx.drawImage(this.inCanvas.gpu, 0, 0);
         if (hasAlpha) {
-          // CNN 不保证保留 alpha：用原图双线性放大后的 alpha 做蒙版
           octx.globalCompositeOperation = 'destination-in';
           octx.drawImage(bitmap, 0, 0, w * 2, h * 2);
           octx.globalCompositeOperation = 'source-over';
@@ -410,11 +422,6 @@
       for (var i = 0; i < bitmaps.length; i++) {
         var bm = bitmaps[i];
         if (!bm) continue;
-        if (SR.enabled && SR.ready) {
-          var up = await SR.upscale(bm, bm.width, bm.height, frameFormat === 'image/webp');
-          bm.close();
-          bm = up;
-        }
         frameQueue.push(bm);
       }
       // 帧到达时排出队列中所有已解码的音频，首次整批排，后续增量排
@@ -440,10 +447,11 @@
     function tick(ts) {
       // 音频驱动模式下：根据已播放音频位置决定应显示第几帧
       if (audioClockStart > 0 && scheduledDuration > 0) {
+        showingCond = false;
         var elapsed = audioCtx.currentTime - audioClockStart;
         if (elapsed < 0) elapsed = 0;
         if (elapsed > scheduledDuration) {
-          // 音频播完，切回回退模式，保留 frameQueue 用于显示尾部帧
+          // 音频播完，切回回退模式继续消费队列中的尾帧
           audioClockStart = 0;
           scheduledDuration = 0;
           lastFrameTime = performance.now();
@@ -462,6 +470,7 @@
         // 无音频时的回退：按目标帧率消费帧
         var dt = ts - lastFrameTime;
         if (dt >= frameInterval && frameQueue.length > 0) {
+          showingCond = false;
           var ff = frameQueue.shift();
           ctx.clearRect(0, 0, canvas.width, canvas.height);
           ctx.drawImage(ff, 0, 0, canvas.width, canvas.height);
@@ -471,6 +480,12 @@
           lastFrameTime = ts;
         } else if (frameQueue.length === 0) {
           lastFrameTime = ts;
+          // 队列空了，显示参考图片（仅在 FlashHead 就绪后）
+          if (!showingCond && isReady && condImageEl && condImageEl._loaded) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(condImageEl, 0, 0, canvas.width, canvas.height);
+            showingCond = true;
+          }
         }
       }
       // 安全阀
@@ -694,7 +709,6 @@
         if (data.text) showSubtitle(data.text);
       } else if (msg.type === 'allChunksCompleted') {
         hideSubtitle();
-        sendToFlashhead({ type: 'flush' });
       } else if (msg.type === 'stopSpeaking') {
         hideSubtitle();
         stopAllAudio();
@@ -768,7 +782,6 @@
   var voiceBtn = document.getElementById('voice-btn');
   var textBtn = document.getElementById('text-btn');
   var subtitleBtn = document.getElementById('subtitle-btn');
-  var srBtn = document.getElementById('sr-btn');
   var refreshBtn = document.getElementById('refresh-btn');
   var closeBtn = document.getElementById('close-btn');
   var pttBtn = document.getElementById('ptt-floating-btn');
@@ -885,29 +898,6 @@
     isSubtitleEnabled = !isSubtitleEnabled;
     subtitleContainer.style.display = isSubtitleEnabled ? 'block' : 'none';
     subtitleBtn.style.color = isSubtitleEnabled ? '#28a745' : '#dc3545';
-  });
-
-  // --- 超分辨率开关 ---
-  bindTapEvent(srBtn, async function () {
-    if (!SR.inited) {
-      setStatus('正在初始化超分辨率...');
-      var ok = await SR.init();
-      hideOverlay();
-      if (!ok) {
-        setError('超分辨率不可用：当前环境不支持 WebGPU');
-        return;
-      }
-    }
-    if (!SR.ready) {
-      setError('超分辨率不可用：当前环境不支持 WebGPU');
-      return;
-    }
-    SR.enabled = !SR.enabled;
-    srBtn.style.color = SR.enabled ? '#007bff' : '#333';
-    if (isReady) {
-      canvas.width = expectedWidth * srScale();
-      canvas.height = expectedHeight * srScale();
-    }
   });
 
   // --- 刷新 ---

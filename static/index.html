@@ -1899,6 +1899,17 @@ function updateElement(el, rawMarkdown, formatFn) {
                         </el-button>
                       </el-tooltip>
 
+                      <el-tooltip :content="t('startSoulxPet')" placement="top">
+                        <el-button
+                          @click="startSoulx"
+                          class="icon-btn soulx-btn"
+                          :type="'default'"
+                          v-if="MoreButtonDict.find(b => b.name === 'soulxButton')?.enabled"
+                          circle>
+                          <i :class='isSoulxStarting? "fa-solid fa-spinner fa-spin" : "fa-solid fa-face-laugh-beam"'></i>
+                        </el-button>
+                      </el-tooltip>
+
                       <el-tooltip :content="t('enableAutoBehavior')" placement="top">
                         <el-button
                           @click="behaviorSettings.enabled=!behaviorSettings.enabled; autoSaveSettings();"
@@ -15843,7 +15854,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           <el-alert type="info" :closable="false" class="mb-2">
                             <template #default>
                               <div class="alert-content">
-                                {{ t('soulxServiceNotice') }}
+                                <span v-html="t('soulxServiceNotice')"></span>
                               </div>
                             </template>
                           </el-alert>
@@ -16623,7 +16634,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           <el-alert type="info" :closable="false" class="mb-2">
                             <template #default>
                               <div class="alert-content">
-                                {{t('thaNotice1')}}
+                                <span v-html="t('thaNotice1')"></span>
                               </div>
                             </template>
                           </el-alert>

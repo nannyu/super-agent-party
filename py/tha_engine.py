@@ -230,6 +230,8 @@ class THAPoseGenerator:
     def set_emotion(self, emotion_name: str):
         """设置情感，平滑过渡到对应姿态"""
         self._emotion_target = EMOTION_POSE_MAP.get(emotion_name, EMOTION_POSE_MAP["neutral"]).copy()
+        if emotion_name == "neutral":
+            self._emotion_pose = self._emotion_target.copy()
 
     def set_emotion_mix(self, weights: Dict[str, float]):
         """设置加权混合表情，如 {"happy": 0.2, "surprised": 0.4}，平滑过渡"""

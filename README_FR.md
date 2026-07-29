@@ -409,4 +409,10 @@ Si vous avez des questions ou des problèmes avec le projet, vous êtes invités
 
 ## Historique des étoiles
 
-[![Star History Chart](https://api.star-history.com/svg?repos=heshengtao/super-agent-party&type=Date)](https://www.star-history.com/#heshengtao/super-agent-party&Date)
+<a href="https://www.star-history.com/?type=date&repos=heshengtao%2Fsuper-agent-party">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=heshengtao/super-agent-party&type=date&theme=dark&legend=top-left&sealed_token=AqZFqS7EQ3cJCeJCuyIFkOAz8zP3Gcywuw3e2mEHJwohMsLmMqyZtCYob_hnPM4CS0CiLIpmXDhvc__CjaaM-mmb2VpMEKwNrm3uRIe6NucU6aIweUQ5sA" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=heshengtao/super-agent-party&type=date&legend=top-left&sealed_token=AqZFqS7EQ3cJCeJCuyIFkOAz8zP3Gcywuw3e2mEHJwohMsLmMqyZtCYob_hnPM4CS0CiLIpmXDhvc__CjaaM-mmb2VpMEKwNrm3uRIe6NucU6aIweUQ5sA" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=heshengtao/super-agent-party&type=date&legend=top-left&sealed_token=AqZFqS7EQ3cJCeJCuyIFkOAz8zP3Gcywuw3e2mEHJwohMsLmMqyZtCYob_hnPM4CS0CiLIpmXDhvc__CjaaM-mmb2VpMEKwNrm3uRIe6NucU6aIweUQ5sA" />
+ </picture>
+</a>
