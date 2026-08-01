@@ -125,6 +125,7 @@ window.lang_zhCN = {
         'createImmediately': '立即创建',
         'vendor.custom': '自定义OpenAI',
         'vendor.customAnthropic': '自定义Anthropic',
+        'vendor.OpenAIResponses': 'OpenAI Responses',
         'vendor.OpenAI': 'OpenAI',
         'vendor.Ollama': 'Ollama',
         "vendor.SGLang": "SGLang",

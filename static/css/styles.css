@@ -1541,10 +1541,14 @@ body {
   }
 
   .el-main {
-    padding: 0!important;
-    margin: 0!important;
+      padding: 0!important;
+      margin: 0!important;
+    }
   }
-}
+
+  .el-main {
+    padding: 0 !important;
+  }
 
 @media (max-width: 680px) {
   .message {
@@ -3311,8 +3315,8 @@ body {
 }
 
 .add-provider-left {
-  width: 280px;
-  min-width: 280px;
+  width: 320px;
+  min-width: 320px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;

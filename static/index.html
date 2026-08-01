@@ -48,7 +48,8 @@
 `);
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js')
+    // updateViaCache: 'none' → sw.js 绕过 HTTP 缓存，升级策略后能立即生效
+    navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' })
       .then(registration => {
         console.log('SW registered: ', registration);
       })
@@ -6731,7 +6732,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                           <div class="vendor-select-row-content">
                             <span class="vendor-select-name">{{ formatVendorName(t(item.label)) }}</span>
                             <span class="vendor-select-category">
-                              {{ item.value === 'custom' || item.value === 'customAnthropic' ? t('custom') : localVendors.includes(item.value) ? t('localModel') : t('cloudModel') }}
+                              {{ item.value === 'custom' || item.value === 'customAnthropic' || item.value === 'OpenAIResponses' ? t('custom') : localVendors.includes(item.value) ? t('localModel') : t('cloudModel') }}
                             </span>
                           </div>
                           <div class="vendor-select-indicator">

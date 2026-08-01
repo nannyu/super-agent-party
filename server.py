@@ -471,6 +471,7 @@ import argparse
 from py.dify_openai import DifyOpenAIAsync
 from py.ClaudeAsOpenAI import AsyncClaudeAsOpenAI
 from py.GeminiAsOpenAI import AsyncGeminiAsOpenAI
+from py.ResponsesAsOpenAI import AsyncResponsesAsOpenAI
 from py.get_setting import EXT_DIR, IS_DOCKER, SKILLS_DIR, _copy_default_skills, convert_to_opus_simple, load_covs, load_settings, save_covs, save_single_cov, save_settings,clean_temp_files_task,base_path,configure_host_port,UPLOAD_FILES_DIR,AGENT_DIR,MEMORY_CACHE_DIR,KB_DIR,DEFAULT_VRM_DIR,DEFAULT_THA_DIR,THA_USER_MODELS_DIR,DEFAULT_SOULX_IMAGES_DIR,SOULX_IMAGES_DIR,USER_DATA_DIR,LOG_DIR,TOOL_TEMP_DIR,COVS_PATH,DATABASE_PATH
 from py.llm_tool import get_image_base64,get_image_media_type
 timetamp = time.time()
@@ -743,6 +744,8 @@ def get_client_class(config, provider_id):
         return AsyncClaudeAsOpenAI
     elif vendor == 'Gemini':
         return AsyncGeminiAsOpenAI
+    elif vendor == 'OpenAIResponses':
+        return AsyncResponsesAsOpenAI
     else: 
         return AsyncOpenAI
 
@@ -1109,6 +1112,67 @@ async def inject_steam_build_flag(request: Request, call_next):
         headers.pop("content-length", None)
         return HTMLResponse(content=body_str, status_code=response.status_code, headers=headers)
     return response
+
+# ── 前端静态资源内容版本号注入 ─────────────────────────────────────────────
+# 原理：HTML 始终 no-cache（每次重新校验），其中引用的 js/css/图片 统一改写为
+#       "path.ext?v=<内容md5前8位>"。文件没变 → hash 不变 → URL 不变 → 缓存命中秒开；
+#       文件变了 → hash 变 → URL 变 → 旧缓存自动作废 → 必然加载新代码（无需强刷）。
+# 配套前端 static/sw.js 对带 ?v= 的资源采用 cache-first（永不 revalidate）。
+_ASSET_VERSION_CACHE = {}   # 文件绝对路径 -> (mtime_ns, hash)
+_ASSET_VERSION_RE = re.compile(r'(src|href)="([^"]+?\.(?:css|js|png|jpe?g|svg|gif|webp|ico|woff2?|ttf|eot|mp4|webm))([^"]*)"')
+
+def _asset_version_hash(base_dir, url):
+    if url.startswith(('http:', 'https:', '//', 'data:')):
+        return ''
+    clean = url.split('?', 1)[0].lstrip('/')
+    if not clean:
+        return ''
+    fp = os.path.normpath(os.path.join(base_dir, clean.replace('/', os.sep)))
+    if not fp.startswith(os.path.normpath(base_dir) + os.sep):
+        return ''
+    try:
+        if not os.path.isfile(fp):
+            return ''
+        st = os.stat(fp)
+    except OSError:
+        return ''
+    cached = _ASSET_VERSION_CACHE.get(fp)
+    if cached and cached[0] == st.st_mtime_ns:
+        return cached[1]
+    try:
+        with open(fp, 'rb') as f:
+            h = hashlib.md5(f.read()).hexdigest()[:8]
+    except OSError:
+        return ''
+    _ASSET_VERSION_CACHE[fp] = (st.st_mtime_ns, h)
+    return h
+
+@app.middleware("http")
+async def inject_asset_versions(request: Request, call_next):
+    response = await call_next(request)
+    ctype = response.headers.get("content-type", "")
+    if "text/html" not in ctype:
+        return response
+    # 扩展目录 / 上传目录等挂载点下的 HTML 不做版本化处理
+    if request.url.path.startswith(("/ext", "/uploaded_files", "/tool_temp")):
+        return response
+    body = b""
+    async for chunk in response.body_iterator:
+        body += chunk
+    body_str = body.decode("utf-8")
+    base_dir = os.path.join(base_path, "static")
+    def _repl(m):
+        url = m.group(2)
+        h = _asset_version_hash(base_dir, url)
+        if not h:
+            return m.group(0)
+        sep = '&' if '?' in m.group(3) else '?'
+        return f'{m.group(1)}="{url}{sep}v={h}"'
+    new_str = _ASSET_VERSION_RE.sub(_repl, body_str)
+    headers = dict(response.headers)
+    headers.pop("content-length", None)
+    headers["Cache-Control"] = "no-cache"
+    return HTMLResponse(content=new_str, status_code=response.status_code, headers=headers)
 
 async def t(text: str) -> str:
     global locales
@@ -7052,6 +7116,13 @@ async def fetch_provider_models(request: ProviderModelRequest):
         # 2. 拦截 Gemini
         elif vendor == 'Gemini':
             client = AsyncGeminiAsOpenAI(
+                api_key=request.api_key,
+                base_url=request.url,
+                http_client=global_http_client
+            )
+        # 2.5 拦截 OpenAI Responses API
+        elif vendor == 'OpenAIResponses':
+            client = AsyncResponsesAsOpenAI(
                 api_key=request.api_key,
                 base_url=request.url,
                 http_client=global_http_client

@@ -3655,6 +3655,8 @@ formatMessage(content, index) {
             }
 
             if (this.ttsSettings.enabled) {
+                // 提前通知：音频输入已全部送出，让 FlashHead 提前生成尾部残帧，避免结尾画面定格
+                setTimeout(() => { this.sendTTSStatusToVRM('audioInputComplete', {}); }, 0);
                 if (this.audioStartTime > this.audioCtx.currentTime) {
                     const remainingTime = (this.audioStartTime - this.audioCtx.currentTime) * 1000;
                     setTimeout(() => { this.sendTTSStatusToVRM('allChunksCompleted', {}); }, remainingTime);
@@ -5593,7 +5595,7 @@ formatMessage(content, index) {
         'tencent': 'https://api.lkeap.cloud.tencent.com/v1',
       }
       
-      if (value !== 'custom' && value !== 'customAnthropic' ) {
+      if (value !== 'custom' && value !== 'customAnthropic' && value !== 'OpenAIResponses') {
         this.newProviderTemp.url = defaultUrls[value] || ''
       }
       if (value === 'Ollama') {
@@ -8593,7 +8595,7 @@ handleCreateSlackSeparator(val) {
             url = url.slice(0, -3);
           }
         }
-        else if (provider.vendor === 'customAnthropic'){
+        else if (provider.vendor === 'customAnthropic' || provider.vendor === 'OpenAIResponses'){
           url = provider.url;
         }
         else {

@@ -52,6 +52,11 @@
   var framesShownTotal = 0;
   var audioChain = Promise.resolve();
   var sendChain = Promise.resolve();  // 发送独立链，不阻塞解码
+  var pendingSends = 0;    // 尚未真正写入 FlashHead 的音频块数
+  var pendingFlush = false; // audioInputComplete 到达时，等发送链排空后再 flush 尾帧
+  var holdDrain = false;    // 等待 FlashHead 尾帧(flushed)期间，暂缓排期剩余音频
+  var holdDrainTimer = null;
+  var sessionEnded = false; // 本次会话播放已结束，丢弃迟到的补零/尾帧
   var nextPlayTime = 0;
   var audioClockStart = 0;
   var scheduledDuration = 0;
@@ -244,6 +249,19 @@
             }
             break;
           case 'flushed':
+            // FlashHead 已补零生成尾部尾帧，解除暂缓，排期剩余音频
+            if (holdDrain) {
+              holdDrain = false;
+              clearTimeout(holdDrainTimer);
+              drainDecodedAudio();
+              // 若音频此刻已播完（没有可排期的尾部音频），
+              // 直接丢弃这些补零尾帧，避免回图后再闪一下
+              if (audioClockStart === 0 && scheduledDuration === 0) {
+                sessionEnded = true;
+                clearFrameQueue();
+              }
+            }
+            break;
           case 'cleared':
           case 'finished':
           case 'reset_ok':
@@ -422,20 +440,27 @@
       for (var i = 0; i < bitmaps.length; i++) {
         var bm = bitmaps[i];
         if (!bm) continue;
+        if (sessionEnded) { bm.close(); continue; }
         frameQueue.push(bm);
       }
-      // 帧到达时排出队列中所有已解码的音频，首次整批排，后续增量排
-      if (decodedAudioQueue.length > 0) {
-        if (!sessionStarted) {
-          flushAudioQueue();
-        } else {
-          while (decodedAudioQueue.length > 0) {
-            var entry = decodedAudioQueue.shift();
-            scheduleChunk(entry.buffer, entry.text, ttsSessionId);
-          }
-        }
+      // 帧到达时排出队列中所有已解码的音频，首次整批排，后续增量排。
+      // 等待 FlashHead 尾帧(flushed)期间暂缓排期，保证尾部音频有帧可播。
+      if (!holdDrain) {
+        drainDecodedAudio();
       }
     });
+  }
+
+  function drainDecodedAudio() {
+    if (decodedAudioQueue.length === 0) return;
+    if (!sessionStarted) {
+      flushAudioQueue();
+    } else {
+      while (decodedAudioQueue.length > 0) {
+        var entry = decodedAudioQueue.shift();
+        scheduleChunk(entry.buffer, entry.text, ttsSessionId);
+      }
+    }
   }
 
   function startRenderLoop() {
@@ -455,6 +480,11 @@
           audioClockStart = 0;
           scheduledDuration = 0;
           lastFrameTime = performance.now();
+          if (!holdDrain) {
+            // 丢弃补零/迟到的尾帧，直接过渡到静态图，避免回图后“再闪一下”
+            sessionEnded = true;
+            clearFrameQueue();
+          }
         } else {
           var targetFrame = Math.floor(elapsed * 16000 / samplesPerFrame);
           while (framesShown < targetFrame && frameQueue.length > 0) {
@@ -467,9 +497,9 @@
           }
         }
       } else {
-        // 无音频时的回退：按目标帧率消费帧
+        // 无音频时的回退：按目标帧率消费帧（等待尾帧期间暂停消费）
         var dt = ts - lastFrameTime;
-        if (dt >= frameInterval && frameQueue.length > 0) {
+        if (dt >= frameInterval && frameQueue.length > 0 && !holdDrain) {
           showingCond = false;
           var ff = frameQueue.shift();
           ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -480,11 +510,12 @@
           lastFrameTime = ts;
         } else if (frameQueue.length === 0) {
           lastFrameTime = ts;
-          // 队列空了，显示参考图片（仅在 FlashHead 就绪后）
-          if (!showingCond && isReady && condImageEl && condImageEl._loaded) {
+          // 队列空了，显示参考图片（仅在 FlashHead 就绪后，且不处于等待尾帧状态）
+          if (!showingCond && isReady && condImageEl && condImageEl._loaded && !holdDrain) {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(condImageEl, 0, 0, canvas.width, canvas.height);
             showingCond = true;
+            sessionEnded = true;
           }
         }
       }
@@ -560,23 +591,24 @@
   // 串行链：解码 → 缓冲；发送异步，不阻塞解码。帧到位后才调度播放。
   function enqueueAudio(audioBytes, subtitleText) {
     var sessionId = ttsSessionId;
+    pendingSends++;
     audioChain = audioChain.then(function () {
       return new Promise(function (resolve) {
-        if (sessionId !== ttsSessionId) { resolve(); return; }
+        if (sessionId !== ttsSessionId) { pendingSends--; resolve(); return; }
         if (audioCtx.state === 'suspended') {
           audioCtx.resume().catch(function () {});
         }
         var arrayBuf = audioBytes.buffer.slice(audioBytes.byteOffset, audioBytes.byteOffset + audioBytes.byteLength);
         audioCtx.decodeAudioData(arrayBuf, function (audioBuffer) {
-          if (sessionId !== ttsSessionId) { resolve(); return; }
+          if (sessionId !== ttsSessionId) { pendingSends--; resolve(); return; }
           decodedAudioQueue.push({ buffer: audioBuffer, text: subtitleText });
           resolve();
           var float32Data = resampleToFloat32Sync(audioBuffer, 16000);
-          if (!float32Data || float32Data.length === 0) return;
+          if (!float32Data || float32Data.length === 0) { pendingSends--; return; }
           sendChain = sendChain.then(function () {
             return new Promise(function (sendResolve) {
               paceInFlight(sessionId, function () {
-                if (sessionId !== ttsSessionId) { sendResolve(); return; }
+                if (sessionId !== ttsSessionId) { pendingSends--; sendResolve(); return; }
                 if (isReady && flashheadWs && flashheadWs.readyState === WebSocket.OPEN) {
                   flashheadWs.send(JSON.stringify({
                     type: 'audio_chunk',
@@ -585,11 +617,17 @@
                   }));
                   samplesSent += float32Data.length;
                 }
+                pendingSends--;
+                // audioInputComplete 到达时若还有音频未写完 FlashHead，等全部写完再 flush
+                if (pendingFlush && pendingSends <= 0) {
+                  pendingFlush = false;
+                  sendToFlashhead({ type: 'flush' });
+                }
                 sendResolve();
               });
             });
           });
-        }, function () { resolve(); });
+        }, function () { pendingSends--; resolve(); });
       });
     });
   }
@@ -620,6 +658,8 @@
   }
 
   function scheduleChunk(audioBuffer, subtitleText, sessionId) {
+    // 有新音频被排期，说明会话仍在播放中
+    sessionEnded = false;
     var startTime = Math.max(audioCtx.currentTime + 0.03, nextPlayTime);
     if (!audioClockStart || audioClockStart === 0) {
       audioClockStart = startTime;
@@ -656,6 +696,11 @@
     framesShown = 0;
     clearFrameQueue();
     sendChain = Promise.resolve();
+    pendingSends = 0;
+    pendingFlush = false;
+    holdDrain = false;
+    sessionEnded = false;
+    clearTimeout(holdDrainTimer);
     for (var i = 0; i < activeSources.length; i++) {
       try { activeSources[i].stop(); } catch (e) {}
     }
@@ -703,12 +748,36 @@
         nextExpectedChunkIdx = 0;
         chunkSortBuffer = {};
         samplesSent = samplesProcessed;
+        pendingSends = 0;
+        pendingFlush = false;
+        holdDrain = false;
+        sessionEnded = false;
+        clearTimeout(holdDrainTimer);
         clearFrameQueue();
         lastFrameTime = performance.now();
       } else if (msg.type === 'omniStreaming') {
         if (data.text) showSubtitle(data.text);
+      } else if (msg.type === 'audioInputComplete') {
+        // 主窗口已把全部音频送出：让 FlashHead 提前补零生成尾帧，
+        // 若还有音频未写完 FlashHead，则在发送链排空后再 flush。
+        if (pendingSends <= 0) {
+          sendToFlashhead({ type: 'flush' });
+        } else {
+          pendingFlush = true;
+        }
+        // 等待 FlashHead 尾帧(flushed)期间暂缓排期剩余音频，保证尾部有帧可播
+        holdDrain = true;
+        clearTimeout(holdDrainTimer);
+        holdDrainTimer = setTimeout(function () {
+          if (holdDrain) {
+            holdDrain = false;
+            drainDecodedAudio();
+          }
+        }, 2000);
       } else if (msg.type === 'allChunksCompleted') {
         hideSubtitle();
+        // 让 FlashHead 把剩余不足一个 chunk 的尾部音频补零生成尾帧，避免结尾画面定格
+        sendToFlashhead({ type: 'flush' });
       } else if (msg.type === 'stopSpeaking') {
         hideSubtitle();
         stopAllAudio();

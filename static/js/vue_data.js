@@ -1940,7 +1940,7 @@ let vue_data = {
     // 供应商推荐参数（从 vendor_params.js 加载，供 UI 建议使用）
     vendorSuggestedParams: window.vendorSuggestedParams || {},
     vendorValues: [
-      'custom','customAnthropic', 'OpenAI','Anthropic', 'Gemini','Grok',
+      'custom','customAnthropic','OpenAIResponses', 'OpenAI','Anthropic', 'Gemini','Grok',
       'llama.cpp', 'Ollama','Vllm','LMstudio','SGLang','xinference','Dify','newapi',
       'LocalAI','ttswebui', 'Deepseek', 'Volcano','302.AI',
       'siliconflow', 'aliyun', 'ZhipuAI', 'moonshot', 'minimax', 

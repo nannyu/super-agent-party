@@ -125,6 +125,7 @@ window.lang_enUS = {
         'createImmediately': 'Create Immediately',
         'vendor.custom': 'Custom OpenAI',
         'vendor.customAnthropic': 'Custom Anthropic',
+        'vendor.OpenAIResponses': 'OpenAI Responses',
         'vendor.OpenAI': 'OpenAI',
         'vendor.Ollama': 'Ollama',
         "vendor.SGLang": "SGLang",
