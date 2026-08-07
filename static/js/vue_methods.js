@@ -609,6 +609,37 @@ formatFileUrl(originalUrl) {
       
       return this.t('newChat');
     },
+    ensureConversationCreated() {
+      // 提前创建会话（发送首条消息时即分配 conversationId），
+      // 保证长耗时流式回复（如深度研究）期间 30s 增量保存可以正常工作
+      if (this.conversationId === null) {
+        this.conversationId = uuid.v4();
+        const newConv = {
+          id: this.conversationId,
+          title: this.generateConversationTitle(this.messages),
+          mainAgent: this.mainAgent,
+          groupId: this.activeConversationGroupId || this.draftConversationGroupId || 'default',
+          timestamp: Date.now(),
+          messages: this.messages,
+          fileLinks: this.fileLinks,
+          system_prompt: this.system_prompt,
+        };
+        this.conversations.unshift(newConv);
+        const MAX_CONVERSATIONS = 50;
+        if (this.conversations.length > MAX_CONVERSATIONS) {
+          this.conversations = this.conversations.slice(0, MAX_CONVERSATIONS);
+        }
+      } else {
+        // 🔴 核心修复：添加安全链判断，防止潜在的读取错误
+        const conv = this.conversations.find(conv => conv.id === this.conversationId);
+        if (conv) {
+          conv.messages = this.messages;
+          conv.timestamp = Date.now();
+          conv.fileLinks = this.fileLinks;
+          conv.groupId = conv.groupId || this.activeConversationGroupId || this.draftConversationGroupId || 'default';
+        }
+      }
+    },
     openDeleteConversationDialog(conversation) {
       if (!conversation?.id) return;
       this.deleteConversationForm = {
@@ -2924,6 +2955,9 @@ formatMessage(content, index) {
         
         this.$nextTick(() => { this.requestScrollToBottom(); });
 
+        // 提前创建会话，确保深度研究等长耗时流式回复期间增量保存可正常工作
+        this.ensureConversationCreated();
+
         // --- 调度逻辑：群聊 vs 单聊 ---
         this.isSending = true; 
         this.abortController = new AbortController(); 
@@ -2992,8 +3026,16 @@ formatMessage(content, index) {
           this.isTyping = false;
           this.isSending = false;
           this.abortController = null;
-          await this.autoSaveSettings();
-          await this.saveConversations();
+          try {
+            await this.autoSaveSettings();
+          } catch (e) {
+            console.error("autoSaveSettings failed:", e);
+          }
+          try {
+            await this.saveConversations();
+          } catch (e) {
+            console.error("saveConversations failed:", e);
+          }
         }
     },
 
@@ -3700,33 +3742,7 @@ formatMessage(content, index) {
             }
 
             // 消息去重和保存
-            if (this.conversationId === null) {
-                this.conversationId = uuid.v4();
-                const newConv = {
-                    id: this.conversationId,
-                    title: this.generateConversationTitle(messagesPayload),
-                    mainAgent: this.mainAgent,
-                    groupId: this.activeConversationGroupId || this.draftConversationGroupId || 'default',
-                    timestamp: Date.now(),
-                    messages: this.messages,
-                    fileLinks: this.fileLinks,
-                    system_prompt: this.system_prompt,
-                };
-                this.conversations.unshift(newConv);
-                const MAX_CONVERSATIONS = 50;
-                if (this.conversations.length > MAX_CONVERSATIONS) {
-                    this.conversations = this.conversations.slice(0, MAX_CONVERSATIONS);
-                }
-            } else {
-                // 🔴 核心修复：添加安全链判断，防止潜在的读取错误
-                const conv = this.conversations.find(conv => conv.id === this.conversationId);
-                if (conv) {
-                    conv.messages = this.messages;
-                    conv.timestamp = Date.now();
-                    conv.fileLinks = this.fileLinks;
-                    conv.groupId = conv.groupId || this.activeConversationGroupId || this.draftConversationGroupId || 'default';
-                }
-            }
+            this.ensureConversationCreated();
 
             // 截断后端消息中过长的 tool content，保护 AI 上下文
             if (currentMsg && currentMsg.backend_content) {
