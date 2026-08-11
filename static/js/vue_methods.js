@@ -1486,7 +1486,8 @@ formatMessage(content, index) {
         if (lowerTagName === 'think') return match;
         const isStandardHtmlName = /^[a-zA-Z][a-zA-Z0-9-]*$/.test(tagName);
         if (isStandardHtmlName) {
-          return match;
+          const safeAttrs = attrs.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, '');
+          return `<${slash}${tagName}${safeAttrs}>`;
         } else {
           return '';
         }
